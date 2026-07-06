@@ -8156,13 +8156,11 @@
                     if (renderer.xr.isPresenting) {
                         const dolly = scene.getObjectByName("VRDolly");
                         if (dolly) {
-                            const xrCamera = renderer.xr.getCamera(camera);
-                            // Get physical headset offset relative to dolly, apply current snap rotation
-                            const offset = xrCamera.position.clone();
-                            offset.applyQuaternion(dolly.quaternion);
-                            
-                            // Align dolly so headset camera matches character head height exactly
-                            dolly.position.copy(headWorldPos).sub(offset);
+                            if (body) {
+                                dolly.position.copy(body.position);
+                            } else if (char && char.mesh) {
+                                dolly.position.copy(char.mesh.position);
+                            }
                             dolly.updateMatrixWorld(true);
                         }
                     } else {
