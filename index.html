@@ -6477,6 +6477,11 @@
         }
 
         let vrControllers = [];
+        let vrSelectedTool = 'move'; // 'move', 'rotate', 'resize', 'add_part', 'properties'
+        let vrGrabbedObject = null;
+        let vrGrabDistance = 3.0;
+        let vrLastHandPositions = [new THREE.Vector3(), new THREE.Vector3()];
+
         function setupVRControllers(renderer, scene) {
             const tempControllers = [];
             for (let i = 0; i < 2; i++) {
@@ -6496,18 +6501,137 @@
                 line.name = 'line';
                 line.scale.z = 5;
                 controller.add(line);
-                controller.visible = false; // Hide by default
+                controller.visible = false;
                 tempControllers.push(controller);
 
-                // Add controller grip mesh - Styled as Yellow Arms matching StarterCharacter
+                // Add controller grip mesh - Old black styled hands
                 const grip = renderer.xr.getControllerGrip(i);
-                const gripGeo = new THREE.BoxGeometry(0.12, 0.12, 0.45);
-                const gripMat = new THREE.MeshPhongMaterial({ color: 0xffd700, roughness: 0.5 });
+                const gripGeo = new THREE.SphereGeometry(0.06, 16, 16);
+                const gripMat = new THREE.MeshPhongMaterial({ color: 0x111111, roughness: 0.8 });
                 const gripMesh = new THREE.Mesh(gripGeo, gripMat);
-                gripMesh.position.set(0, 0, -0.15); // Offset to project forward like hands
                 grip.add(gripMesh);
-                grip.visible = false; // Hide by default
+                grip.visible = false;
                 tempControllers.push(grip);
+
+                // Attach Yellow-Orange Cube Menu to the Right Hand (Controller index 1 is right)
+                if (i === 1) {
+                    const menuCubeGeo = new THREE.BoxGeometry(0.08, 0.08, 0.08);
+                    const menuCubeMat = new THREE.MeshPhongMaterial({ color: 0xff8800, roughness: 0.3 });
+                    const menuCube = new THREE.Mesh(menuCubeGeo, menuCubeMat);
+                    menuCube.name = "VRMenuCube";
+                    menuCube.position.set(0, 0.08, -0.05);
+                    grip.add(menuCube);
+
+                    // Add a guy (floating 3D UI Panel) in front of the menu cube
+                    const panelGeo = new THREE.PlaneGeometry(0.35, 0.28);
+                    const canvas = document.createElement('canvas');
+                    canvas.width = 512;
+                    canvas.height = 384;
+                    const ctx = canvas.getContext('2d');
+                    
+                    // Render interactive menu texture helper
+                    function updateVRMenuCanvas() {
+                        ctx.fillStyle = 'rgba(30, 30, 30, 0.95)';
+                        ctx.fillRect(0, 0, 512, 384);
+                        ctx.strokeStyle = '#007acc';
+                        ctx.lineWidth = 6;
+                        ctx.strokeRect(0, 0, 512, 384);
+
+                        ctx.fillStyle = '#ffffff';
+                        ctx.font = 'bold 28px sans-serif';
+                        ctx.fillText('VR Studio Tools', 30, 50);
+
+                        const tools = [
+                            { id: 'move', label: 'Move (Physgun)' },
+                            { id: 'rotate', label: 'Rotate' },
+                            { id: 'resize', label: 'Resize' },
+                            { id: 'add_part', label: 'Add Part' },
+                            { id: 'properties', label: 'Properties' }
+                        ];
+
+                        tools.forEach((t, index) => {
+                            const y = 90 + index * 55;
+                            if (vrSelectedTool === t.id) {
+                                ctx.fillStyle = '#007acc';
+                                ctx.fillRect(20, y, 472, 45);
+                                ctx.fillStyle = '#ffffff';
+                            } else {
+                                ctx.fillStyle = '#2d2d2d';
+                                ctx.fillRect(20, y, 472, 45);
+                                ctx.fillStyle = '#aaaaaa';
+                            }
+                            ctx.font = '22px sans-serif';
+                            ctx.fillText(t.label, 40, y + 30);
+                        });
+                        panelTex.needsUpdate = true;
+                    }
+
+                    const panelTex = new THREE.CanvasTexture(canvas);
+                    const panelMat = new THREE.MeshBasicMaterial({ map: panelTex, side: THREE.DoubleSide });
+                    const panelMesh = new THREE.Mesh(panelGeo, panelMat);
+                    panelMesh.name = "VRMenuPanel";
+                    panelMesh.position.set(0, 0.24, -0.1);
+                    panelMesh.rotation.x = -Math.PI / 12;
+                    menuCube.add(panelMesh);
+
+                    // Expose update function
+                    window.updateVRMenuTexture = updateVRMenuCanvas;
+                    updateVRMenuCanvas();
+                }
+
+                // Setup Trigger Grabbing (Physgun) / Tool Interactions
+                controller.addEventListener('selectstart', () => {
+                    if (!renderer.xr.isPresenting) return;
+                    
+                    const raycaster = new THREE.Raycaster();
+                    const tempMatrix = new THREE.Matrix4();
+                    tempMatrix.identity().extractRotation(controller.matrixWorld);
+                    raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+                    raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+
+                    // 1. Raycast the right hand menu first
+                    const menuPanel = scene.getObjectByName("VRMenuPanel");
+                    if (menuPanel) {
+                        const intersects = raycaster.intersectObject(menuPanel);
+                        if (intersects.length > 0) {
+                            const uv = intersects[0].uv;
+                            // Map uv to selected tool option row
+                            const clickedRow = Math.floor((1.0 - uv.y) * 384 / 55) - 1;
+                            const tools = ['move', 'rotate', 'resize', 'add_part', 'properties'];
+                            if (tools[clickedRow]) {
+                                vrSelectedTool = tools[clickedRow];
+                                playSFX('click');
+                                if (vrSelectedTool === 'add_part') {
+                                    const spawnPos = new THREE.Vector3().copy(raycaster.ray.origin).addScaledVector(raycaster.ray.direction, 2);
+                                    spawnPart(spawnPos);
+                                    vrSelectedTool = 'move';
+                                }
+                                if (window.updateVRMenuTexture) window.updateVRMenuTexture();
+                            }
+                            return;
+                        }
+                    }
+
+                    // 2. Raycast scene objects for Physgun manipulation
+                    const targets = [];
+                    window.appState.parts.forEach(p => {
+                        if (p.mesh !== baseplate) targets.push(p.mesh);
+                    });
+                    const intersects = raycaster.intersectObjects(targets, true);
+                    if (intersects.length > 0) {
+                        let clicked = intersects[0].object;
+                        while (clicked && clicked.parent && clicked.parent !== scene) {
+                            clicked = clicked.parent;
+                        }
+                        vrGrabbedObject = clicked;
+                        vrGrabDistance = intersects[0].distance;
+                        playSFX('click');
+                    }
+                });
+
+                controller.addEventListener('selectend', () => {
+                    vrGrabbedObject = null;
+                });
             }
 
             vrControllers = tempControllers;
@@ -6519,7 +6643,6 @@
                 camera.position.set(0, 0, 0);
                 camera.quaternion.set(0, 0, 0, 1);
                 
-                // Add controllers to dolly on session start so they don't sit at origin in edit mode
                 const currentDolly = scene.getObjectByName("VRDolly");
                 if (currentDolly) {
                     vrControllers.forEach(c => {
@@ -6540,7 +6663,6 @@
                     currentDolly.position.set(0, 0, 0);
                     currentDolly.quaternion.set(0, 0, 0, 1);
                     
-                    // Remove controllers from dolly on session end
                     vrControllers.forEach(c => {
                         currentDolly.remove(c);
                         c.visible = false;
@@ -8193,10 +8315,70 @@
                 console.error("Error in humanoid overlays update:", err);
             }
 
+            // Physgun movement & Punch physics checking in VR
+            if (renderer.xr.isPresenting) {
+                // Update Physgun Grabbing
+                if (vrGrabbedObject) {
+                    const rightController = vrControllers[2]; // index 2 is controller 1 (right)
+                    if (rightController) {
+                        const tempMatrix = new THREE.Matrix4();
+                        tempMatrix.identity().extractRotation(rightController.matrixWorld);
+                        const origin = new THREE.Vector3().setFromMatrixPosition(rightController.matrixWorld);
+                        const dir = new THREE.Vector3(0, 0, -1).applyMatrix4(tempMatrix);
+                        
+                        const targetPos = new THREE.Vector3().copy(origin).addScaledVector(dir, vrGrabDistance);
+                        
+                        const part = window.appState.parts.find(p => p.mesh === vrGrabbedObject);
+                        if (part && part.body) {
+                            if (vrSelectedTool === 'move') {
+                                // Physgun hold: Set velocity to attract to target point
+                                const diff = new THREE.Vector3().subVectors(targetPos, vrGrabbedObject.position);
+                                part.body.velocity.set(diff.x * 12, diff.y * 12, diff.z * 12);
+                                part.body.angularVelocity.set(0, 0, 0);
+                            } else if (vrSelectedTool === 'rotate') {
+                                part.body.angularVelocity.set(0, 4, 0);
+                            } else if (vrSelectedTool === 'resize') {
+                                const sizeScale = 1.0 + Math.sin(now * 0.005) * 0.02;
+                                vrGrabbedObject.scale.multiplyScalar(sizeScale);
+                                updateCannonShape(part);
+                            }
+                        } else {
+                            vrGrabbedObject.position.copy(targetPos);
+                        }
+                    }
+                }
+
+                // Controller motion velocity based Punching detection
+                for (let i = 0; i < 2; i++) {
+                    const grip = vrControllers[i * 2 + 1];
+                    if (grip && grip.visible) {
+                        const currentPos = new THREE.Vector3().setFromMatrixPosition(grip.matrixWorld);
+                        const lastPos = vrLastHandPositions[i];
+                        const speed = currentPos.distanceTo(lastPos) / delta;
+                        
+                        if (speed > 4.5) { // Fast punch gesture
+                            // Find nearby bodies and apply physical impact
+                            window.appState.parts.forEach(p => {
+                                if (p && p.body && p.mesh !== baseplate) {
+                                    const dist = p.mesh.position.distanceTo(currentPos);
+                                    if (dist < 1.0) {
+                                        const punchDir = new THREE.Vector3().subVectors(p.mesh.position, currentPos).normalize();
+                                        p.body.applyImpulse(new CANNON.Vec3(punchDir.x * 15, punchDir.y * 15 + 8, punchDir.z * 15), p.body.position);
+                                        playSFX('spawn'); // High pitch retro sound for contact feedback
+                                    }
+                                }
+                            });
+                        }
+                        lastPos.copy(currentPos);
+                    }
+                }
+            }
+
             // 7. Render Step (Always run render step to ensure updates are pushed to display)
             try {
                 renderer.render(scene, camera);
-                if (renderer.domElement) {
+                // ONLY apply canvas CSS tricks if we are not presenting in VR, to avoid Quest screen flashing
+                if (renderer.domElement && !renderer.xr.isPresenting) {
                     // Dynamically toggle minor transform & opacity styles on the WebGL canvas.
                     // This forces the WebKit GPU compositor to composite/invalidate the layer, bypassing the "rotate to render" bug.
                     renderer.domElement.style.transform = `translate3d(0, 0, ${Math.sin(now * 0.05) * 0.001}px)`;
