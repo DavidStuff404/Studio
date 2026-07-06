@@ -6478,6 +6478,7 @@
 
         let vrControllers = [];
         function setupVRControllers(renderer, scene) {
+            const tempControllers = [];
             for (let i = 0; i < 2; i++) {
                 const controller = renderer.xr.getController(i);
                 
@@ -6496,19 +6497,20 @@
                 line.scale.z = 5;
                 controller.add(line);
                 controller.visible = false; // Hide by default
-                scene.add(controller);
-                vrControllers.push(controller);
+                tempControllers.push(controller);
 
-                // Add controller grip mesh
+                // Add controller grip mesh - Styled as Yellow Arms matching StarterCharacter
                 const grip = renderer.xr.getControllerGrip(i);
-                const gripGeo = new THREE.BoxGeometry(0.04, 0.04, 0.12);
-                const gripMat = new THREE.MeshPhongMaterial({ color: 0x2d2d2d });
+                const gripGeo = new THREE.BoxGeometry(0.12, 0.12, 0.45);
+                const gripMat = new THREE.MeshPhongMaterial({ color: 0xffd700, roughness: 0.5 });
                 const gripMesh = new THREE.Mesh(gripGeo, gripMat);
+                gripMesh.position.set(0, 0, -0.15); // Offset to project forward like hands
                 grip.add(gripMesh);
                 grip.visible = false; // Hide by default
-                scene.add(grip);
-                vrControllers.push(grip);
+                tempControllers.push(grip);
             }
+
+            vrControllers = tempControllers;
 
             // Session event listeners
             renderer.xr.addEventListener('sessionstart', () => {
@@ -6516,7 +6518,15 @@
                 window.appState.vrRestoreCameraQuat = camera.quaternion.clone();
                 camera.position.set(0, 0, 0);
                 camera.quaternion.set(0, 0, 0, 1);
-                vrControllers.forEach(c => c.visible = true); // Only display hands/beams in VR mode
+                
+                // Add controllers to dolly on session start so they don't sit at origin in edit mode
+                const currentDolly = scene.getObjectByName("VRDolly");
+                if (currentDolly) {
+                    vrControllers.forEach(c => {
+                        currentDolly.add(c);
+                        c.visible = true;
+                    });
+                }
                 showToast("VR Session Active!");
             });
 
@@ -6525,12 +6535,17 @@
                     camera.position.copy(window.appState.vrRestoreCameraPos);
                     camera.quaternion.copy(window.appState.vrRestoreCameraQuat);
                 }
-                const dolly = scene.getObjectByName("VRDolly");
-                if (dolly) {
-                    dolly.position.set(0, 0, 0);
-                    dolly.quaternion.set(0, 0, 0, 1);
+                const currentDolly = scene.getObjectByName("VRDolly");
+                if (currentDolly) {
+                    currentDolly.position.set(0, 0, 0);
+                    currentDolly.quaternion.set(0, 0, 0, 1);
+                    
+                    // Remove controllers from dolly on session end
+                    vrControllers.forEach(c => {
+                        currentDolly.remove(c);
+                        c.visible = false;
+                    });
                 }
-                vrControllers.forEach(c => c.visible = false); // Hide hands when exiting VR mode
                 showToast("VR Session Closed");
             });
         }
@@ -8006,6 +8021,9 @@
                             if (child.isMesh && child.name !== 'HumanoidRootPart') {
                                 if (child.name === 'Head' || child.parent?.name === 'Head' || child.name === 'HeadJoint') {
                                     child.visible = !isFirstPerson && !renderer.xr.isPresenting;
+                                } else if (child.name === 'Left Arm' || child.name === 'Right Arm') {
+                                    // Hide original character arms in VR to use controller hand meshes instead
+                                    child.visible = !renderer.xr.isPresenting;
                                 } else {
                                     child.visible = true;
                                 }
@@ -8016,8 +8034,14 @@
                     if (renderer.xr.isPresenting) {
                         const dolly = scene.getObjectByName("VRDolly");
                         if (dolly) {
-                            // Align dolly to character head position
-                            dolly.position.copy(headWorldPos);
+                            const xrCamera = renderer.xr.getCamera(camera);
+                            // Get physical headset offset relative to dolly, apply current snap rotation
+                            const offset = xrCamera.position.clone();
+                            offset.applyQuaternion(dolly.quaternion);
+                            
+                            // Align dolly so headset camera matches character head height exactly
+                            dolly.position.copy(headWorldPos).sub(offset);
+                            dolly.updateMatrixWorld(true);
                         }
                     } else {
                         camera.position.x = headWorldPos.x - Math.sin(yaw) * Math.cos(pitch) * zoomDist;
