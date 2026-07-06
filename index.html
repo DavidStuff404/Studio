@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" style="--bg-secondary: #4a157d; --bg-primary: #120324; --accent: #d39dff; height: 100%; overscroll-behavior: contain; -webkit-touch-callout: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent;"><style>*{-webkit-user-select:none!important;user-select:none!important;-webkit-touch-callout:none!important;}input,textarea,[contenteditable]{-webkit-user-select:text!important;user-select:text!important;}</style><head>
+<html lang="en" style="height: 100%; overscroll-behavior: contain; -webkit-touch-callout: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; --bg-secondary: #4a157d; --bg-primary: #120324; --accent: #d39dff;"><style>*{-webkit-user-select:none!important;user-select:none!important;-webkit-touch-callout:none!important;}input,textarea,[contenteditable]{-webkit-user-select:text!important;user-select:text!important;}</style><head>
 <script>
 (function() {
   if (typeof CustomEvent === 'function') return;
@@ -3894,6 +3894,7 @@
         let logoMesh;
         let ui3DContainer;
         let content3DGroup;
+        let waveMesh, handLight;
 
         const TILE_INFOS = [
             { target: 'games', label: 'GAMES' },
@@ -4013,6 +4014,13 @@
             return texture;
         }
 
+        // Helper to position panel objects curved towards the camera (VR exclusive cylinder layout)
+        function positionOnCylinderArc(mesh, angleDeg, y, radius = 2.8) {
+            const rad = angleDeg * Math.PI / 180;
+            mesh.position.set(Math.sin(rad) * radius, y, -Math.cos(rad) * radius);
+            mesh.lookAt(0, y, 0);
+        }
+
         // Create standard back button mesh
         function create3DBackButton() {
             const backTexture = createUITexture(256, 64, (ctx, w, h) => {
@@ -4030,7 +4038,7 @@
             const backGeo = new THREE.PlaneGeometry(1.2, 0.3);
             const backMat = new THREE.MeshBasicMaterial({ map: backTexture, transparent: true });
             const backMesh = new THREE.Mesh(backGeo, backMat);
-            backMesh.position.set(-1.2, 1.6, 0);
+            positionOnCylinderArc(backMesh, -25, 1.4, 2.7);
             backMesh.userData.onClick = () => {
                 window.switchScreen('hub');
             };
@@ -4041,8 +4049,8 @@
         function init3D() {
             const canvas = document.getElementById('vr-canvas');
             scene = new THREE.Scene();
-            scene.background = new THREE.Color('#120324');
-            scene.fog = new THREE.FogExp2('#120324', 0.08);
+            scene.background = new THREE.Color('#0a0214'); // Dark focus bg
+            scene.fog = new THREE.FogExp2('#0a0214', 0.12);
 
             camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 100);
             camera.position.set(0, 0, 5);
@@ -4058,13 +4066,41 @@
             controls.maxDistance = 12;
             controls.minDistance = 3;
 
-            // Lights
-            const ambientLight = new THREE.AmbientLight(0xffffff, 0.85);
+            // Cool lighting for VR focus
+            const ambientLight = new THREE.AmbientLight(0x221144, 0.5);
             scene.add(ambientLight);
 
-            const dirLight = new THREE.DirectionalLight(0xd39dff, 1.5);
+            const dirLight = new THREE.DirectionalLight(0xd39dff, 1.2);
             dirLight.position.set(5, 10, 7);
             scene.add(dirLight);
+
+            // Purple glowing accent light
+            handLight = new THREE.PointLight(0xa855f7, 3, 8);
+            handLight.position.set(0, 2, 2);
+            scene.add(handLight);
+
+            // Dark Frutiger Aero wavy ground
+            const waveGeo = new THREE.PlaneGeometry(35, 35, 32, 32);
+            const pos = waveGeo.attributes.position;
+            for (let i = 0; i < pos.count; i++) {
+                const vx = pos.getX(i);
+                const vy = pos.getY(i);
+                const vz = Math.sin(vx * 0.25) * Math.cos(vy * 0.25) * 0.8;
+                pos.setZ(i, vz);
+            }
+            waveGeo.computeVertexNormals();
+            const waveMat = new THREE.MeshPhysicalMaterial({
+                color: 0x1b083c,
+                roughness: 0.1,
+                metalness: 0.8,
+                clearcoat: 1.0,
+                clearcoatRoughness: 0.05,
+                flatShading: true
+            });
+            waveMesh = new THREE.Mesh(waveGeo, waveMat);
+            waveMesh.rotation.x = -Math.PI / 2;
+            waveMesh.position.y = -2;
+            scene.add(waveMesh);
 
             // Floating Bubble Particles (Aero theme)
             bubblesGroup = new THREE.Group();
@@ -4074,18 +4110,18 @@
                 const mat = new THREE.MeshPhysicalMaterial({
                     color: 0xd39dff,
                     transparent: true,
-                    opacity: 0.5,
+                    opacity: 0.4,
                     roughness: 0,
-                    transmission: 0.6,
+                    transmission: 0.7,
                     thickness: 0.5
                 });
                 const mesh = new THREE.Mesh(bubbleGeo, mat);
                 mesh.position.set(
-                    (Math.random() - 0.5) * 10,
+                    (Math.random() - 0.5) * 12,
                     (Math.random() - 0.5) * 6,
                     (Math.random() - 0.5) * 8
                 );
-                mesh.userData.speed = 0.005 + Math.random() * 0.01;
+                mesh.userData.speed = 0.003 + Math.random() * 0.007;
                 bubblesGroup.add(mesh);
             }
 
@@ -4215,10 +4251,23 @@
             hand.addEventListener('pinchstart', () => onXRPinch(hand));
             scene.add(hand);
 
-            // Build simple joints
-            const jointGeo = new THREE.SphereGeometry(0.015, 8, 8);
-            const jointMat = new THREE.MeshBasicMaterial({ color: 0xd39dff });
+            // Purple Gradient Shiny Joints
+            const jointGeo = new THREE.SphereGeometry(0.018, 16, 16);
             for (let i = 0; i < 25; i++) {
+                const gradientColor = new THREE.Color().lerpColors(
+                    new THREE.Color('#4a157d'),
+                    new THREE.Color('#e0b3ff'),
+                    i / 24
+                );
+                const jointMat = new THREE.MeshPhysicalMaterial({
+                    color: gradientColor,
+                    roughness: 0.05,
+                    metalness: 0.9,
+                    clearcoat: 1.0,
+                    clearcoatRoughness: 0.05,
+                    transmission: 0.1,
+                    thickness: 0.2
+                });
                 const bone = new THREE.Mesh(jointGeo, jointMat);
                 hand.add(bone);
             }
@@ -4243,6 +4292,9 @@
                     obj = obj.parent;
                 }
                 if (obj) {
+                    // Lock input: cannot select category tiles if already in a sub-page
+                    if (window.appState.currentScreen !== 'hub' && obj.userData.target) return;
+
                     if (obj.userData.onClick) {
                         obj.userData.onClick();
                     } else if (obj.userData.target) {
@@ -4269,6 +4321,9 @@
                         obj = obj.parent;
                     }
                     if (obj) {
+                        // Lock input: cannot select category tiles if already in a sub-page
+                        if (window.appState.currentScreen !== 'hub' && obj.userData.target) return;
+
                         if (obj.userData.onClick) {
                             obj.userData.onClick();
                         } else if (obj.userData.target) {
@@ -4304,6 +4359,9 @@
                     obj = obj.parent;
                 }
                 if (obj) {
+                    // Lock input: cannot select category tiles if already in a sub-page
+                    if (window.appState.currentScreen !== 'hub' && obj.userData.target) return;
+
                     if (obj.userData.onClick) {
                         obj.userData.onClick();
                     } else if (obj.userData.target) {
@@ -4321,6 +4379,25 @@
 
         function animate(timestamp) {
             if (controls) controls.update();
+
+            // Animate wave background (Aero liquid ripple effect)
+            if (waveMesh) {
+                const pos = waveMesh.geometry.attributes.position;
+                for (let i = 0; i < pos.count; i++) {
+                    const vx = pos.getX(i);
+                    const vy = pos.getY(i);
+                    const vz = Math.sin(vx * 0.25 + timestamp * 0.001) * Math.cos(vy * 0.25 + timestamp * 0.001) * 0.6;
+                    pos.setZ(i, vz);
+                }
+                waveMesh.geometry.computeVertexNormals();
+                waveMesh.geometry.attributes.position.needsUpdate = true;
+            }
+
+            // Move dynamic point light
+            if (handLight) {
+                handLight.position.x = Math.sin(timestamp * 0.001) * 4;
+                handLight.position.z = -1 + Math.cos(timestamp * 0.001) * 2;
+            }
 
             // Animate bubble positions (rising)
             if (bubblesGroup) {
@@ -4343,6 +4420,24 @@
 
             if (logoMesh && logoMesh.visible) {
                 logoMesh.position.y = 1.7 + Math.sin(timestamp * 0.001) * 0.03;
+            }
+
+            // Dynamically synchronize hand tracking positions if available
+            for (let index = 0; index < 2; index++) {
+                const hand = renderer.xr.getHand(index);
+                if (hand && hand.visible && hand.joints) {
+                    Object.keys(hand.joints).forEach((jointName, idx) => {
+                        const jointSpace = hand.joints[jointName];
+                        if (jointSpace && jointSpace.jointRadius !== undefined) {
+                            const visualBone = hand.children[idx];
+                            if (visualBone) {
+                                visualBone.position.copy(jointSpace.position);
+                                visualBone.rotation.copy(jointSpace.rotation);
+                                visualBone.visible = true;
+                            }
+                        }
+                    });
+                }
             }
 
             renderer.render(scene, camera);
@@ -4375,7 +4470,7 @@
             }
         };
 
-        // Render virtual 3D tab panel screens
+        // Render virtual 3D tab panel screens (curved arc cylindrical coords - VR exclusive layout)
         window.on3DScreenChange = function(screenId) {
             if (!content3DGroup) return;
 
@@ -4405,7 +4500,8 @@
 
             if (screenId === 'games') {
                 window.appState.games.forEach((game, idx) => {
-                    const yOffset = 0.5 - (idx * 0.8);
+                    const angle = -10 + (idx * 20); // Curved lateral angles
+                    const yOffset = 0.4;
                     const gameTexture = createUITexture(512, 128, (ctx, w, h) => {
                         ctx.fillStyle = 'rgba(74, 21, 125, 0.9)';
                         ctx.fillRect(0, 0, w, h);
@@ -4420,10 +4516,10 @@
                         ctx.font = '18px Arial';
                         ctx.fillText(`by ${game.creator} | ${game.players} playing`, 24, 84);
                     });
-                    const gameGeo = new THREE.PlaneGeometry(3.0, 0.7);
+                    const gameGeo = new THREE.PlaneGeometry(2.6, 0.7);
                     const gameMat = new THREE.MeshBasicMaterial({ map: gameTexture, transparent: true });
                     const gameMesh = new THREE.Mesh(gameGeo, gameMat);
-                    gameMesh.position.set(0, yOffset, 0);
+                    positionOnCylinderArc(gameMesh, angle, yOffset, 2.7);
                     gameMesh.userData.onClick = () => {
                         window.playSFX('tap');
                         window.selectGame(idx);
@@ -4473,10 +4569,10 @@
                     ctx.textAlign = 'center';
                     ctx.fillText("PLAY GAME", w/2, 332);
                 });
-                const detailGeo = new THREE.PlaneGeometry(3.0, 2.2);
+                const detailGeo = new THREE.PlaneGeometry(2.6, 1.95);
                 const detailMat = new THREE.MeshBasicMaterial({ map: detailTexture, transparent: true });
                 const detailMesh = new THREE.Mesh(detailGeo, detailMat);
-                detailMesh.position.set(0, 0, 0);
+                positionOnCylinderArc(detailMesh, 10, 0.2, 2.7);
                 detailMesh.userData.onClick = () => {
                     window.playSFX('back');
                     window.vibrate();
@@ -4485,7 +4581,7 @@
                 content3DGroup.add(detailMesh);
             } else if (screenId === 'catalog') {
                 window.appState.catalog.forEach((item, idx) => {
-                    const xOffset = (idx - 1) * 1.3;
+                    const angle = -18 + (idx * 18);
                     const isOwned = window.appState.inventory.includes(item.id);
                     const cardTexture = createUITexture(256, 300, (ctx, w, h) => {
                         ctx.fillStyle = 'rgba(74, 21, 125, 0.9)';
@@ -4509,10 +4605,10 @@
                         ctx.font = 'bold 18px Arial';
                         ctx.fillText(isOwned ? 'OWNED' : 'BUY', w/2, h - 42);
                     });
-                    const cardGeo = new THREE.PlaneGeometry(1.1, 1.3);
+                    const cardGeo = new THREE.PlaneGeometry(1.0, 1.2);
                     const cardMat = new THREE.MeshBasicMaterial({ map: cardTexture, transparent: true });
                     const cardMesh = new THREE.Mesh(cardGeo, cardMat);
-                    cardMesh.position.set(xOffset, 0, 0);
+                    positionOnCylinderArc(cardMesh, angle, 0.2, 2.7);
                     cardMesh.userData.onClick = () => {
                         if (isOwned) return;
                         window.buyCatalogItem(item.id, item.price);
@@ -4530,16 +4626,16 @@
                         ctx.textAlign = 'center';
                         ctx.fillText("Your inventory is empty.", w/2, h/2);
                     });
-                    const emptyGeo = new THREE.PlaneGeometry(3.0, 0.8);
+                    const emptyGeo = new THREE.PlaneGeometry(2.8, 0.7);
                     const emptyMat = new THREE.MeshBasicMaterial({ map: emptyTexture, transparent: true });
                     const emptyMesh = new THREE.Mesh(emptyGeo, emptyMat);
-                    emptyMesh.position.set(0, 0, 0);
+                    positionOnCylinderArc(emptyMesh, 10, 0.3, 2.7);
                     content3DGroup.add(emptyMesh);
                 } else {
                     window.appState.inventory.forEach((itemId, idx) => {
                         const item = window.appState.catalog.find(c => c.id === itemId);
                         if (!item) return;
-                        const yOffset = 0.5 - (idx * 0.7);
+                        const angle = -10 + (idx * 20);
                         const isEquipped = window.appState.equippedItem === itemId;
 
                         const invTexture = createUITexture(512, 96, (ctx, w, h) => {
@@ -4560,10 +4656,10 @@
                             ctx.textAlign = 'center';
                             ctx.fillText(isEquipped ? 'UNEQUIP' : 'EQUIP', w - 85, 54);
                         });
-                        const invGeo = new THREE.PlaneGeometry(3.0, 0.6);
+                        const invGeo = new THREE.PlaneGeometry(2.6, 0.5);
                         const invMat = new THREE.MeshBasicMaterial({ map: invTexture, transparent: true });
                         const invMesh = new THREE.Mesh(invGeo, invMat);
-                        invMesh.position.set(0, yOffset, 0);
+                        positionOnCylinderArc(invMesh, angle, 0.4, 2.7);
                         invMesh.userData.onClick = () => {
                             window.toggleEquipItem(itemId);
                             window.on3DScreenChange('inventory');
@@ -4588,11 +4684,11 @@
                     ctx.fillText(`BGM Volume: ${Math.round(bgmVolume * 100)}%`, 30, 110);
                     ctx.fillText(`Vibration: ${window.appState.vibration}ms`, 30, 180);
                 });
-                const setBgMesh = new THREE.Mesh(new THREE.PlaneGeometry(3.0, 1.5), new THREE.MeshBasicMaterial({ map: setBgTex, transparent: true }));
-                setBgMesh.position.set(0, 0, -0.01);
+                const setBgMesh = new THREE.Mesh(new THREE.PlaneGeometry(2.6, 1.3), new THREE.MeshBasicMaterial({ map: setBgTex, transparent: true }));
+                positionOnCylinderArc(setBgMesh, 10, 0.2, 2.7);
                 content3DGroup.add(setBgMesh);
 
-                const createBtnMesh = (label, x, y, onClick) => {
+                const createBtnMesh = (label, angle, y, onClick) => {
                     const tex = createUITexture(128, 64, (ctx, w, h) => {
                         ctx.fillStyle = '#8b5cf6';
                         ctx.fillRect(0, 0, w, h);
@@ -4602,27 +4698,27 @@
                         ctx.textBaseline = 'middle';
                         ctx.fillText(label, w/2, h/2);
                     });
-                    const m = new THREE.Mesh(new THREE.PlaneGeometry(0.6, 0.3), new THREE.MeshBasicMaterial({ map: tex }));
-                    m.position.set(x, y, 0.01);
+                    const m = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.25), new THREE.MeshBasicMaterial({ map: tex }));
+                    positionOnCylinderArc(m, angle, y, 2.68);
                     m.userData.onClick = onClick;
                     content3DGroup.add(m);
                 };
 
-                createBtnMesh("Vol -", 0.6, 0.2, () => {
+                createBtnMesh("Vol -", 16, 0.35, () => {
                     const bgmEl = document.getElementById('music-bgm');
                     if (bgmEl) bgmEl.volume = Math.max(0, bgmEl.volume - 0.1);
                     window.on3DScreenChange('settings');
                 });
-                createBtnMesh("Vol +", 1.3, 0.2, () => {
+                createBtnMesh("Vol +", 24, 0.35, () => {
                     const bgmEl = document.getElementById('music-bgm');
                     if (bgmEl) bgmEl.volume = Math.min(1.0, bgmEl.volume + 0.1);
                     window.on3DScreenChange('settings');
                 });
-                createBtnMesh("Vib -", 0.6, -0.25, () => {
+                createBtnMesh("Vib -", 16, -0.05, () => {
                     window.appState.vibration = Math.max(0, window.appState.vibration - 10);
                     window.on3DScreenChange('settings');
                 });
-                createBtnMesh("Vib +", 1.3, -0.25, () => {
+                createBtnMesh("Vib +", 24, -0.05, () => {
                     window.appState.vibration = Math.min(200, window.appState.vibration + 10);
                     window.on3DScreenChange('settings');
                 });
@@ -4649,14 +4745,14 @@
                     ctx.fillText("> ERROR: Connection timed out.", 40, 250);
                     ctx.fillText("> FATAL: Socket closed by host.", 40, 280);
                 });
-                const profGeo = new THREE.PlaneGeometry(3.0, 2.2);
+                const profGeo = new THREE.PlaneGeometry(2.6, 1.95);
                 const profMat = new THREE.MeshBasicMaterial({ map: profileTexture, transparent: true });
                 const profMesh = new THREE.Mesh(profGeo, profMat);
-                profMesh.position.set(0, 0, 0);
+                positionOnCylinderArc(profMesh, 10, 0.2, 2.7);
                 content3DGroup.add(profMesh);
             } else if (screenId === 'messages') {
                 window.appState.messages.forEach((msg, idx) => {
-                    const yOffset = 0.6 - (idx * 0.7);
+                    const angle = -10 + (idx * 20);
                     const msgTexture = createUITexture(512, 96, (ctx, w, h) => {
                         ctx.fillStyle = 'rgba(74, 21, 125, 0.9)';
                         ctx.fillRect(0, 0, w, h);
@@ -4672,10 +4768,10 @@
                         ctx.font = 'bold 16px Arial';
                         ctx.fillText(msg.subject, 20, 64);
                     });
-                    const msgGeo = new THREE.PlaneGeometry(3.0, 0.6);
+                    const msgGeo = new THREE.PlaneGeometry(2.6, 0.5);
                     const msgMat = new THREE.MeshBasicMaterial({ map: msgTexture, transparent: true });
                     const msgMesh = new THREE.Mesh(msgGeo, msgMat);
-                    msgMesh.position.set(0, yOffset, 0);
+                    positionOnCylinderArc(msgMesh, angle, 0.4, 2.7);
                     msgMesh.userData.onClick = () => {
                         window.playSFX('back');
                         window.vibrate();
@@ -4687,8 +4783,8 @@
                 window.appState.friends.forEach((friend, idx) => {
                     const col = idx % 2;
                     const row = Math.floor(idx / 2);
-                    const x = (col - 0.5) * 1.6;
-                    const y = 0.4 - (row * 0.8);
+                    const angle = -15 + (col * 30);
+                    const y = 0.5 - (row * 0.7);
 
                     const friendTexture = createUITexture(256, 128, (ctx, w, h) => {
                         ctx.fillStyle = 'rgba(74, 21, 125, 0.9)';
@@ -4705,10 +4801,10 @@
                         ctx.font = '14px Arial';
                         ctx.fillText(friend.online ? 'Online' : 'Offline', 20, 80);
                     });
-                    const friendGeo = new THREE.PlaneGeometry(1.4, 0.7);
+                    const friendGeo = new THREE.PlaneGeometry(1.2, 0.6);
                     const friendMat = new THREE.MeshBasicMaterial({ map: friendTexture, transparent: true });
                     const friendMesh = new THREE.Mesh(friendGeo, friendMat);
-                    friendMesh.position.set(x, y, 0);
+                    positionOnCylinderArc(friendMesh, angle, y, 2.7);
                     content3DGroup.add(friendMesh);
                 });
             } else if (screenId === 'quests') {
@@ -4718,7 +4814,7 @@
                 if (buyQuest) buyQuest.current = Math.min(window.appState.inventory.length, buyQuest.target);
 
                 window.appState.quests.forEach((q, idx) => {
-                    const yOffset = 0.5 - (idx * 0.8);
+                    const angle = -10 + (idx * 20);
                     const percent = q.current / q.target;
                     const qTexture = createUITexture(512, 128, (ctx, w, h) => {
                         ctx.fillStyle = 'rgba(74, 21, 125, 0.9)';
@@ -4745,10 +4841,10 @@
                         ctx.font = 'bold 14px Arial';
                         ctx.fillText(`${q.current}/${q.target}`, 330, 110);
                     });
-                    const qGeo = new THREE.PlaneGeometry(3.0, 0.7);
+                    const qGeo = new THREE.PlaneGeometry(2.6, 0.6);
                     const qMat = new THREE.MeshBasicMaterial({ map: qTexture, transparent: true });
                     const qMesh = new THREE.Mesh(qGeo, qMat);
-                    qMesh.position.set(0, yOffset, 0);
+                    positionOnCylinderArc(qMesh, angle, 0.4, 2.7);
                     content3DGroup.add(qMesh);
                 });
             } else if (screenId === 'groups') {
@@ -4774,10 +4870,10 @@
                             ctx.font = '14px Arial';
                             ctx.fillText(activePost.content.substring(0, 120), 20, 120);
                         });
-                        const detailGeo = new THREE.PlaneGeometry(3.0, 1.5);
+                        const detailGeo = new THREE.PlaneGeometry(2.6, 1.3);
                         const detailMat = new THREE.MeshBasicMaterial({ map: threadDetailTexture, transparent: true });
                         const detailMesh = new THREE.Mesh(detailGeo, detailMat);
-                        detailMesh.position.set(0, 0, 0);
+                        positionOnCylinderArc(detailMesh, 10, 0.3, 2.7);
                         content3DGroup.add(detailMesh);
 
                         const b2tTex = createUITexture(256, 64, (ctx, w, h) => {
@@ -4789,8 +4885,8 @@
                             ctx.textBaseline = 'middle';
                             ctx.fillText('< BACK TO LIST', w/2, h/2);
                         });
-                        const b2tMesh = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 0.3), new THREE.MeshBasicMaterial({ map: b2tTex }));
-                        b2tMesh.position.set(0, -0.95, 0.01);
+                        const b2tMesh = new THREE.Mesh(new THREE.PlaneGeometry(1.0, 0.25), new THREE.MeshBasicMaterial({ map: b2tTex }));
+                        positionOnCylinderArc(b2tMesh, 10, -0.6, 2.68);
                         b2tMesh.userData.onClick = () => {
                             window.playSFX('back');
                             window.appState.activeThreadId = null;
@@ -4808,14 +4904,14 @@
                             ctx.textAlign = 'center';
                             ctx.fillText("Connecting to forums...", w/2, h/2);
                         });
-                        const emptyGeo = new THREE.PlaneGeometry(3.0, 0.8);
+                        const emptyGeo = new THREE.PlaneGeometry(2.8, 0.7);
                         const emptyMat = new THREE.MeshBasicMaterial({ map: emptyTexture, transparent: true });
                         const emptyMesh = new THREE.Mesh(emptyGeo, emptyMat);
-                        emptyMesh.position.set(0, 0, 0);
+                        positionOnCylinderArc(emptyMesh, 10, 0.3, 2.7);
                         content3DGroup.add(emptyMesh);
                     } else {
                         window.appState.forumPosts.slice(0, 3).forEach((post, idx) => {
-                            const yOffset = 0.6 - (idx * 0.7);
+                            const angle = -10 + (idx * 20);
                             const postTexture = createUITexture(512, 96, (ctx, w, h) => {
                                 ctx.fillStyle = 'rgba(74, 21, 125, 0.9)';
                                 ctx.fillRect(0, 0, w, h);
@@ -4831,10 +4927,10 @@
                                 ctx.font = '14px Arial';
                                 ctx.fillText(`By ${post.name}`, 20, 68);
                             });
-                            const postGeo = new THREE.PlaneGeometry(3.0, 0.6);
+                            const postGeo = new THREE.PlaneGeometry(2.6, 0.5);
                             const postMat = new THREE.MeshBasicMaterial({ map: postTexture, transparent: true });
                             const postMesh = new THREE.Mesh(postGeo, postMat);
-                            postMesh.position.set(0, yOffset, 0);
+                            positionOnCylinderArc(postMesh, angle, 0.4, 2.7);
                             postMesh.userData.onClick = () => {
                                 window.selectThread(post.id);
                                 window.on3DScreenChange('groups');
