@@ -2296,6 +2296,43 @@
             }
         }
 
+        function initStudioSynchronously() {
+            if (renderer) return; // Already initialized
+            console.log("Initializing WebGL and Physics environment synchronously...");
+            try {
+                setupPhysics();
+                setup3D();
+                setupInteractions();
+                setupControlListeners();
+                setupPCControls();
+                animate();
+                
+                // Dual-drive fallback interval at 75Hz (approx 13ms) for strict WebKit environments
+                setInterval(tick, 13);
+                
+                if (INITIAL_WORKSPACE_SNAPSHOT) {
+                    try {
+                        deserializeWorkspace(INITIAL_WORKSPACE_SNAPSHOT);
+                    } catch (err) {
+                        console.error("Error during snapshot deserialization:", err);
+                    }
+                    window.appState.history.undoStack.push(INITIAL_WORKSPACE_SNAPSHOT);
+                    updateUndoRedoButtons();
+                } else {
+                    // Save initial workspace snapshot
+                    window.appState.history.undoStack.push(serializeWorkspace());
+                    updateUndoRedoButtons();
+                }
+                
+                resizeViewport();
+                updateExplorer();
+                safeCreateIcons();
+            } catch (setupErr) {
+                console.error("3D/Physics Setup Failed:", setupErr);
+                showToast("Setup Error: " + setupErr.message);
+            }
+        }
+
         function initApp() {
             try {
                 applyAllEditableValues();
@@ -2315,48 +2352,14 @@
                         mainMenu.classList.add('hidden');
                     }
                     
-                    // Delay setup slightly to ensure layout is correctly computed now that menu is hidden
-                    setTimeout(() => {
-                        console.log("Initializing WebGL and Physics environment...");
-                        try {
-                            setupPhysics();
-                            setup3D();
-                            setupInteractions();
-                            setupControlListeners();
-                            setupPCControls();
-                            animate();
-                            
-                            // Dual-drive fallback interval at 75Hz (approx 13ms) for strict WebKit environments
-                            setInterval(tick, 13);
-                            
-                            if (INITIAL_WORKSPACE_SNAPSHOT) {
-                                try {
-                                    deserializeWorkspace(INITIAL_WORKSPACE_SNAPSHOT);
-                                } catch (err) {
-                                    console.error("Error during snapshot deserialization:", err);
-                                    showToast("Snapshot error: " + err.message);
-                                }
-                                window.appState.history.undoStack.push(INITIAL_WORKSPACE_SNAPSHOT);
-                                updateUndoRedoButtons();
-                            } else {
-                                // Save initial workspace snapshot
-                                window.appState.history.undoStack.push(serializeWorkspace());
-                                updateUndoRedoButtons();
-                            }
-                            
-                            // Force multiple resize checks to avoid race conditions with DOM layout changes
-                            resizeViewport();
-                            setTimeout(resizeViewport, 50);
-                            setTimeout(resizeViewport, 150);
-                            setTimeout(resizeViewport, 300);
-                            
-                            updateExplorer();
-                            safeCreateIcons();
-                        } catch (setupErr) {
-                            console.error("3D/Physics Setup Failed:", setupErr);
-                            showToast("Setup Error: " + setupErr.message);
-                        }
-                    }, 50);
+                    // Initialize studio setup synchronously
+                    initStudioSynchronously();
+                    
+                    // Run layout updates
+                    resizeViewport();
+                    setTimeout(resizeViewport, 50);
+                    setTimeout(resizeViewport, 150);
+                    setTimeout(resizeViewport, 300);
                 });
             }
             
@@ -2389,11 +2392,9 @@
                     if (mainMenu) {
                         mainMenu.classList.add('hidden');
                     }
-                    // Simulate Begin click if initialization hasn't occurred
-                    if (!renderer) {
-                        beginBtn.click();
-                    }
-                    setTimeout(enterVR, 200);
+                    // Initialize synchronously to preserve user gesture
+                    initStudioSynchronously();
+                    await enterVR();
                 });
             }
 
@@ -6494,6 +6495,7 @@
                 line.name = 'line';
                 line.scale.z = 5;
                 controller.add(line);
+                controller.visible = false; // Hide by default
                 scene.add(controller);
                 vrControllers.push(controller);
 
@@ -6503,7 +6505,9 @@
                 const gripMat = new THREE.MeshPhongMaterial({ color: 0x2d2d2d });
                 const gripMesh = new THREE.Mesh(gripGeo, gripMat);
                 grip.add(gripMesh);
+                grip.visible = false; // Hide by default
                 scene.add(grip);
+                vrControllers.push(grip);
             }
 
             // Session event listeners
@@ -6512,6 +6516,7 @@
                 window.appState.vrRestoreCameraQuat = camera.quaternion.clone();
                 camera.position.set(0, 0, 0);
                 camera.quaternion.set(0, 0, 0, 1);
+                vrControllers.forEach(c => c.visible = true); // Only display hands/beams in VR mode
                 showToast("VR Session Active!");
             });
 
@@ -6525,6 +6530,7 @@
                     dolly.position.set(0, 0, 0);
                     dolly.quaternion.set(0, 0, 0, 1);
                 }
+                vrControllers.forEach(c => c.visible = false); // Hide hands when exiting VR mode
                 showToast("VR Session Closed");
             });
         }
@@ -6538,7 +6544,7 @@
                 const session = await navigator.xr.requestSession('immersive-vr', {
                     optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking']
                 });
-                renderer.xr.setSession(session);
+                await renderer.xr.setSession(session);
             } catch (err) {
                 showToast("VR Start Failed: " + err.message);
             }
