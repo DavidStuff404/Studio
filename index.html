@@ -2515,7 +2515,7 @@
         function serializeWorkspace() {
             const data = [];
             scene.children.forEach(child => {
-                if (child.name === 'VRDolly') return;
+                if (child.name === 'VRDolly' || child.name === 'VRResizeArrows' || child.name === 'VRHandSphere' || child.name === 'VRCrowbar') return;
                 if (child === baseplate) {
                     const bpData = {
                         type: 'Baseplate',
@@ -5811,16 +5811,18 @@
                 explorerPanel.style.display = 'none';
             }
 
-            // Sync WebXR collisions
+            // Sync WebXR collisions with physical dynamic attributes
             if (renderer.xr.isPresenting) {
                 const dolly = scene.getObjectByName("VRDolly");
                 if (dolly) {
                     window.appState.vrPlayerBody = new CANNON.Body({
-                        mass: 0,
-                        type: CANNON.Body.STATIC,
+                        mass: 70, // Human scale mass
+                        type: CANNON.Body.DYNAMIC,
                         position: new CANNON.Vec3(dolly.position.x, dolly.position.y + 0.8, dolly.position.z),
-                        shape: new CANNON.Box(new CANNON.Vec3(0.5, 0.8, 0.5))
+                        fixedRotation: true
                     });
+                    window.appState.vrPlayerBody.addShape(new CANNON.Sphere(0.35), new CANNON.Vec3(0, -0.4, 0));
+                    window.appState.vrPlayerBody.addShape(new CANNON.Sphere(0.35), new CANNON.Vec3(0, 0.4, 0));
                     world.addBody(window.appState.vrPlayerBody);
                 }
             }
@@ -6521,6 +6523,7 @@
         let vrClimbingPart = null;
         let vrClimbHandOffset = new THREE.Vector3();
         let vrClimbStartDollyPos = new THREE.Vector3();
+        let vrMenuOpen = true; // R1 toggled
 
         // Arrow handles for visual scaling
         let resizeArrowsGroup = null;
@@ -6580,21 +6583,23 @@
             const loader = new GLTFLoader();
             loader.load('https://prod-data.sekai.chat/v3-games/chat-creation/models/322835dc-9648-462c-929d-46033a7f5c5a.glb', (gltf) => {
                 crowbarModel = gltf.scene;
-                crowbarModel.scale.set(0.12, 0.12, 0.12);
-                crowbarModel.rotateX(Math.PI / 2);
+                // Fit perfectly in hand
+                crowbarModel.scale.set(0.06, 0.06, 0.06);
+                crowbarModel.rotateX(Math.PI / 2.2);
+                crowbarModel.position.set(0, -0.02, -0.05);
             }, undefined, (err) => {
                 console.warn("Failed to load custom crowbar model, generating high-fidelity fallback...", err);
                 const fallbackGroup = new THREE.Group();
-                const rodGeo = new THREE.CylinderGeometry(0.015, 0.015, 0.35, 8);
+                const rodGeo = new THREE.CylinderGeometry(0.01, 0.01, 0.25, 8);
                 const rodMat = new THREE.MeshPhongMaterial({ color: 0x555555, metalness: 0.8 });
                 const rod = new THREE.Mesh(rodGeo, rodMat);
-                rod.position.set(0, 0, -0.1);
+                rod.position.set(0, 0, -0.08);
                 rod.rotation.x = Math.PI / 2;
                 fallbackGroup.add(rod);
-                const tipGeo = new THREE.BoxGeometry(0.02, 0.08, 0.02);
+                const tipGeo = new THREE.BoxGeometry(0.015, 0.05, 0.015);
                 const tipMat = new THREE.MeshPhongMaterial({ color: 0xaa2222 });
                 const tip = new THREE.Mesh(tipGeo, tipMat);
-                tip.position.set(0, 0, -0.27);
+                tip.position.set(0, 0, -0.2);
                 fallbackGroup.add(tip);
                 crowbarModel = fallbackGroup;
             });
@@ -6635,11 +6640,11 @@
 
                 // Attach Yellow-Orange Cube Menu to the Right Hand (Controller index 1 is right)
                 if (i === 1) {
-                    const menuCubeGeo = new THREE.BoxGeometry(0.06, 0.06, 0.06);
+                    const menuCubeGeo = new THREE.BoxGeometry(0.05, 0.05, 0.05); // size of hand
                     const menuCubeMat = new THREE.MeshPhongMaterial({ color: 0xff8800, roughness: 0.3 });
                     const menuCube = new THREE.Mesh(menuCubeGeo, menuCubeMat);
                     menuCube.name = "VRMenuCube";
-                    menuCube.position.set(0, 0.06, -0.03);
+                    menuCube.position.set(0, 0.05, -0.02);
                     grip.add(menuCube);
 
                     // Add a guy (floating 3D UI Panel) in front of the menu cube
@@ -6986,7 +6991,7 @@
             const menuPanel = scene.getObjectByName("VRMenuPanel");
             const menuCube = scene.getObjectByName("VRMenuCube");
             if (menuPanel && menuCube) {
-                const showBTools = (vrEquipped === 'btools');
+                const showBTools = (vrEquipped === 'btools' && vrMenuOpen);
                 menuPanel.visible = showBTools;
                 menuCube.visible = showBTools;
             }
@@ -6998,17 +7003,17 @@
 
                     // Button index mapping check (Standard mapping: index 4 A/X, index 5 bumper/R1)
                     if (source.gamepad.buttons) {
-                        // Check if R1 (typically button 4 or 5) is pressed to open selection radial
+                        // Check if R1 is pressed to toggle menu visibility or cycle equip
                         if (source.gamepad.buttons[4]?.pressed || source.gamepad.buttons[5]?.pressed) {
                             r1Pressed = true;
                         }
-                        // Check if X button on left controller is pressed
-                        if (hand === 'left' && (source.gamepad.buttons[3]?.pressed || source.gamepad.buttons[0]?.pressed)) {
+                        // Check if X/A button is pressed
+                        if (source.gamepad.buttons[0]?.pressed || source.gamepad.buttons[3]?.pressed) {
                             xButtonPressed = true;
                         }
                     }
 
-                    // Left hand: Movement
+                    // Left hand: Movement / L2 Trigger Climb / Grab
                     if (hand === 'left') {
                         const joyX = axes[2] || axes[0] || 0;
                         const joyY = axes[3] || axes[1] || 0;
@@ -7043,29 +7048,45 @@
                         }
 
                         // Left Hand climbing trigger (L2/Grip hold)
-                        const gripPressed = source.gamepad.buttons[1]?.pressed;
+                        const gripPressed = source.gamepad.buttons[1]?.pressed || source.gamepad.buttons[2]?.pressed;
                         if (gripPressed && leftController) {
                             const controllerPos = new THREE.Vector3().setFromMatrixPosition(leftController.matrixWorld);
                             if (!vrClimbingPart) {
                                 // Search for nearest part to grab onto
                                 window.appState.parts.forEach(p => {
-                                    if (p.mesh && p.mesh.position.distanceTo(controllerPos) < 0.4) {
+                                    if (p.mesh && p.mesh !== baseplate && p.mesh.position.distanceTo(controllerPos) < 0.8) {
                                         vrClimbingPart = p;
                                         vrClimbHandOffset.copy(controllerPos);
                                         vrClimbStartDollyPos.copy(dolly.position);
+                                        // Grab / Unanchor dynamic objects
+                                        if (!p.mesh.userData.anchored) {
+                                            p.body.mass = 1;
+                                            p.body.type = CANNON.Body.DYNAMIC;
+                                            p.body.updateMassProperties();
+                                        }
                                     }
                                 });
                             } else {
-                                // Drag dolly in coordinate space matching physical hands pulls
-                                const offset = new THREE.Vector3().subVectors(vrClimbHandOffset, controllerPos);
-                                dolly.position.copy(vrClimbStartDollyPos).add(offset);
+                                // Drag dolly in coordinate space matching physical hands pulls (climbing)
+                                if (vrClimbingPart.mesh.userData.anchored) {
+                                    const offset = new THREE.Vector3().subVectors(vrClimbHandOffset, controllerPos);
+                                    dolly.position.copy(vrClimbStartDollyPos).add(offset);
+                                } else {
+                                    // Drag physical unanchored object
+                                    const currentGripPos = new THREE.Vector3().setFromMatrixPosition(leftController.matrixWorld);
+                                    vrClimbingPart.mesh.position.copy(currentGripPos);
+                                    if (vrClimbingPart.body) {
+                                        vrClimbingPart.body.position.copy(currentGripPos);
+                                        vrClimbingPart.body.velocity.set(0, 0, 0);
+                                    }
+                                }
                             }
                         } else {
                             if (vrClimbingPart) vrClimbingPart = null;
                         }
                     }
 
-                    // Right hand: Snap Turn, Jump and Rotation
+                    // Right hand: Snap Turn, Jump, Grab and Rotation
                     if (hand === 'right') {
                         const joyX = axes[2] || axes[0] || 0;
                         const joyY = axes[3] || axes[1] || 0;
@@ -7106,6 +7127,37 @@
                                 }
                             }
                         }
+
+                        // Right Hand climbing/grabbing trigger for Empty Hand
+                        const rightGripPressed = source.gamepad.buttons[1]?.pressed || source.gamepad.buttons[2]?.pressed;
+                        if (vrEquipped === 'empty' && rightGripPressed && rightController) {
+                            const controllerPos = new THREE.Vector3().setFromMatrixPosition(rightController.matrixWorld);
+                            if (!window.appState.vrRightClimbingPart) {
+                                window.appState.parts.forEach(p => {
+                                    if (p.mesh && p.mesh !== baseplate && p.mesh.position.distanceTo(controllerPos) < 0.8) {
+                                        window.appState.vrRightClimbingPart = p;
+                                        window.appState.vrRightClimbHandOffset = controllerPos.clone();
+                                        window.appState.vrRightClimbStartDollyPos = dolly.position.clone();
+                                    }
+                                });
+                            } else {
+                                const targetPart = window.appState.vrRightClimbingPart;
+                                if (targetPart.mesh.userData.anchored) {
+                                    const offset = new THREE.Vector3().subVectors(window.appState.vrRightClimbHandOffset, controllerPos);
+                                    dolly.position.copy(window.appState.vrRightClimbStartDollyPos).add(offset);
+                                } else {
+                                    // Grab physical unanchored object
+                                    const currentGripPos = new THREE.Vector3().setFromMatrixPosition(rightController.matrixWorld);
+                                    targetPart.mesh.position.copy(currentGripPos);
+                                    if (targetPart.body) {
+                                        targetPart.body.position.copy(currentGripPos);
+                                        targetPart.body.velocity.set(0, 0, 0);
+                                    }
+                                }
+                            }
+                        } else {
+                            window.appState.vrRightClimbingPart = null;
+                        }
                     }
                 }
             }
@@ -7114,6 +7166,8 @@
             if (r1Pressed) {
                 if (!vrRadialMenuVisible) {
                     vrRadialMenuVisible = true;
+                    // Toggle menu visibility
+                    vrMenuOpen = !vrMenuOpen;
                     // Cycle tools: none -> crowbar -> btools -> empty -> none
                     const equips = ['none', 'crowbar', 'btools', 'empty'];
                     let idx = equips.indexOf(vrEquipped);
@@ -7131,8 +7185,6 @@
                         if (vrEquipped === 'crowbar' && crowbarModel) {
                             const cbClone = crowbarModel.clone();
                             cbClone.name = "VRCrowbar";
-                            cbClone.position.set(0, 0, -0.08);
-                            cbClone.rotation.set(Math.PI / 2, 0, 0);
                             rightGrip.add(cbClone);
                         }
                     }
@@ -8560,7 +8612,14 @@
                     if (renderer.xr.isPresenting) {
                         const dolly = scene.getObjectByName("VRDolly");
                         if (dolly) {
-                            if (body) {
+                            // Sync physics body position back to dolly
+                            if (window.appState.vrPlayerBody) {
+                                dolly.position.set(
+                                    window.appState.vrPlayerBody.position.x,
+                                    window.appState.vrPlayerBody.position.y - 0.8,
+                                    window.appState.vrPlayerBody.position.z
+                                );
+                            } else if (body) {
                                 dolly.position.copy(body.position);
                             } else if (char && char.mesh) {
                                 dolly.position.copy(char.mesh.position);
