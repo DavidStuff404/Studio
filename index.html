@@ -3196,6 +3196,12 @@
             // Setup VR Controllers & Listeners
             setupVRControllers(renderer, scene);
 
+            // Configure WebXR Manager to not force local matrix override if presenting
+            renderer.xr.addEventListener('sessionstart', () => {
+                camera.position.set(0, 0, 0); // Reset local camera transforms to allow full untethered WebXR 6-DOF tracking
+                camera.quaternion.set(0, 0, 0, 1);
+            });
+
             // Lighting
             ambientLight = new THREE.AmbientLight(0xffffff, 0.55);
             scene.add(ambientLight);
@@ -6651,9 +6657,27 @@
                         ctx.lineWidth = 8;
                         ctx.strokeRect(0, 0, 512, 450);
 
+                        // Draw a visual "guy/noob" head in the top-right header corner
+                        ctx.fillStyle = '#ffd700'; // Yellow head
+                        ctx.beginPath();
+                        ctx.arc(440, 45, 25, 0, Math.PI * 2);
+                        ctx.fill();
+                        
+                        // Guy's face details
+                        ctx.fillStyle = '#111111';
+                        ctx.beginPath();
+                        ctx.arc(430, 40, 3, 0, Math.PI * 2);
+                        ctx.arc(450, 40, 3, 0, Math.PI * 2);
+                        ctx.fill();
+                        ctx.strokeStyle = '#111111';
+                        ctx.lineWidth = 3;
+                        ctx.beginPath();
+                        ctx.arc(440, 48, 8, 0, Math.PI);
+                        ctx.stroke();
+
                         ctx.fillStyle = '#ffffff';
-                        ctx.font = 'bold 30px sans-serif';
-                        ctx.fillText('VR Studio Tools', 30, 50);
+                        ctx.font = 'bold 26px sans-serif';
+                        ctx.fillText('VR Studio Tools', 30, 52);
 
                         const tools = [
                             { id: 'move', label: 'Move (Physgun)' },
@@ -8791,9 +8815,6 @@
                     // This forces the WebKit GPU compositor to composite/invalidate the layer, bypassing the "rotate to render" bug.
                     renderer.domElement.style.transform = `translate3d(0, 0, ${Math.sin(now * 0.05) * 0.001}px)`;
                     renderer.domElement.style.opacity = (Math.floor(now / 16) % 2 === 0) ? '0.999' : '1.0';
-                } else if (renderer.domElement && renderer.xr.isPresenting) {
-                    renderer.domElement.style.transform = 'none';
-                    renderer.domElement.style.opacity = '1.0';
                 }
             } catch (err) {
                 console.error("Error in WebGL rendering loop:", err);
