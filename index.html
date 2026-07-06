@@ -2308,7 +2308,11 @@
                 animate();
                 
                 // Dual-drive fallback interval at 75Hz (approx 13ms) for strict WebKit environments
-                setInterval(tick, 13);
+                setInterval(() => {
+                    if (renderer && !renderer.xr.isPresenting) {
+                        tick();
+                    }
+                }, 13);
                 
                 if (INITIAL_WORKSPACE_SNAPSHOT) {
                     try {
@@ -3182,6 +3186,7 @@
             renderer.toneMapping = THREE.ACESFilmicToneMapping;
             renderer.toneMappingExposure = 1.05;
             renderer.xr.enabled = true; // Enable WebXR
+            renderer.xr.setReferenceSpaceType('local-floor');
             container.prepend(renderer.domElement);
 
             scene.add(cameraGroup);
@@ -6563,6 +6568,16 @@
                             ctx.font = '22px sans-serif';
                             ctx.fillText(t.label, 40, y + 30);
                         });
+
+                        // If properties tool selected and an object is grabbed, draw properties
+                        if (vrSelectedTool === 'properties' && vrGrabbedObject) {
+                            ctx.fillStyle = '#22c55e';
+                            ctx.fillRect(20, 330, 472, 40);
+                            ctx.fillStyle = '#ffffff';
+                            ctx.font = 'bold 18px sans-serif';
+                            ctx.fillText(`Target: ${vrGrabbedObject.name || 'Part'}`, 30, 355);
+                        }
+
                         panelTex.needsUpdate = true;
                     }
 
@@ -6626,11 +6641,19 @@
                         vrGrabbedObject = clicked;
                         vrGrabDistance = intersects[0].distance;
                         playSFX('click');
+
+                        // Update properties context
+                        if (vrSelectedTool === 'properties' && window.updateVRMenuTexture) {
+                            window.updateVRMenuTexture();
+                        }
                     }
                 });
 
                 controller.addEventListener('selectend', () => {
                     vrGrabbedObject = null;
+                    if (vrSelectedTool === 'properties' && window.updateVRMenuTexture) {
+                        window.updateVRMenuTexture();
+                    }
                 });
             }
 
@@ -8325,23 +8348,43 @@
                         const dir = new THREE.Vector3(0, 0, -1).applyMatrix4(tempMatrix);
                         
                         const targetPos = new THREE.Vector3().copy(origin).addScaledVector(dir, vrGrabDistance);
-                        
                         const part = window.appState.parts.find(p => p.mesh === vrGrabbedObject);
-                        if (part && part.body) {
-                            if (vrSelectedTool === 'move') {
-                                // Physgun hold: Set velocity to attract to target point
-                                const diff = new THREE.Vector3().subVectors(targetPos, vrGrabbedObject.position);
-                                part.body.velocity.set(diff.x * 12, diff.y * 12, diff.z * 12);
+                        
+                        if (vrSelectedTool === 'move') {
+                            if (part && part.body) {
+                                // Real Physgun movement logic: Directly position the body and freeze velocities
+                                part.body.position.set(targetPos.x, targetPos.y, targetPos.z);
+                                part.body.velocity.set(0, 0, 0);
                                 part.body.angularVelocity.set(0, 0, 0);
-                            } else if (vrSelectedTool === 'rotate') {
-                                part.body.angularVelocity.set(0, 4, 0);
-                            } else if (vrSelectedTool === 'resize') {
-                                const sizeScale = 1.0 + Math.sin(now * 0.005) * 0.02;
-                                vrGrabbedObject.scale.multiplyScalar(sizeScale);
+                            }
+                            vrGrabbedObject.position.copy(targetPos);
+                        } else if (vrSelectedTool === 'rotate') {
+                            vrGrabbedObject.rotateY(delta * 2.5);
+                            if (part && part.body) {
+                                part.body.quaternion.set(
+                                    vrGrabbedObject.quaternion.x,
+                                    vrGrabbedObject.quaternion.y,
+                                    vrGrabbedObject.quaternion.z,
+                                    vrGrabbedObject.quaternion.w
+                                );
+                            }
+                        } else if (vrSelectedTool === 'resize') {
+                            const scaleSpeed = 1.0 + delta * 0.5;
+                            vrGrabbedObject.scale.multiplyScalar(scaleSpeed);
+                            if (part) {
                                 updateCannonShape(part);
                             }
-                        } else {
-                            vrGrabbedObject.position.copy(targetPos);
+                        } else if (vrSelectedTool === 'properties') {
+                            // Cycle simple color on trigger touch/hold for visual confirmation
+                            if (Math.random() < 0.05 && vrGrabbedObject.material) {
+                                const colors = [0xff0000, 0x00ff00, 0x0000ff, 0xffff00, 0xff00ff];
+                                const randColor = colors[Math.floor(Math.random() * colors.length)];
+                                if (Array.isArray(vrGrabbedObject.material)) {
+                                    vrGrabbedObject.material.forEach(m => m.color?.setHex(randColor));
+                                } else {
+                                    vrGrabbedObject.material.color?.setHex(randColor);
+                                }
+                            }
                         }
                     }
                 }
@@ -8350,6 +8393,16 @@
                 for (let i = 0; i < 2; i++) {
                     const grip = vrControllers[i * 2 + 1];
                     if (grip && grip.visible) {
+                        // Apply specific offset when hand tracking is actively used
+                        const session = renderer.xr.getSession();
+                        const isHandTracking = session && session.inputSources[i] && session.inputSources[i].hand;
+                        if (isHandTracking) {
+                            // Apply a 5cm forward offset to align virtual hands with real knuckle bounds
+                            const forwardOffset = new THREE.Vector3(0, 0, -0.05);
+                            forwardOffset.applyQuaternion(grip.quaternion);
+                            grip.position.add(forwardOffset);
+                        }
+
                         const currentPos = new THREE.Vector3().setFromMatrixPosition(grip.matrixWorld);
                         const lastPos = vrLastHandPositions[i];
                         const speed = currentPos.distanceTo(lastPos) / delta;
@@ -8381,6 +8434,9 @@
                     // This forces the WebKit GPU compositor to composite/invalidate the layer, bypassing the "rotate to render" bug.
                     renderer.domElement.style.transform = `translate3d(0, 0, ${Math.sin(now * 0.05) * 0.001}px)`;
                     renderer.domElement.style.opacity = (Math.floor(now / 16) % 2 === 0) ? '0.999' : '1.0';
+                } else if (renderer.domElement && renderer.xr.isPresenting) {
+                    renderer.domElement.style.transform = 'none';
+                    renderer.domElement.style.opacity = '1.0';
                 }
             } catch (err) {
                 console.error("Error in WebGL rendering loop:", err);
