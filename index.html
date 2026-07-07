@@ -3927,14 +3927,16 @@
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
         let scene, camera, renderer, controls;
-        let bubblesGroup, targetsGroup;
+        let bubblesGroup;
         let is3DActive = false;
         let raycaster, mouse;
         let waveMesh, handLight;
 
-        // Custom VR Exclusive Mechanics
+        // Custom VR Exclusive Mechanics (Dungeon & Locomotion)
         let facilityRoom = null;
         let environmentColliders = [];
+        let haloMesh = null; // Left hand aiming target ring
+        let particleExplosions = []; // Track explosion visual states
         
         let grabbedObj = null;
         let activeController = null;
@@ -3943,12 +3945,13 @@
         // Locomotion & Gesture Detection Helpers
         let lastSnapTime = 0;
         let lastPinchState = [false, false]; // [left, right]
+        let leftScissorsActive = false;
         
         // Arm-swing locomotion tracking variables
         let lastHandPositions = [new THREE.Vector3(), new THREE.Vector3()];
         let xrCameraRig = null; // Rig to move in VR space
 
-        // Missing visual & structural 3D helpers
+        // Missing visual & structural 3D helpers (Stubbed out to prevent errors)
         let tiles3DGroup = null;
         let logoMesh = null;
         let content3DGroup = null;
@@ -3974,151 +3977,181 @@
             mesh.lookAt(0, yOffset, 0);
         }
 
-        // Create standard back button mesh
-        function create3DBackButton() {
-            // No menus exist anymore.
-        }
-
-        // Setup facility room structures procedurally
+        // Setup dungeon structures procedurally with torch fixtures & colliders
         async function buildProceduralFacility() {
             if (facilityRoom) {
                 scene.remove(facilityRoom);
                 facilityRoom = null;
             }
             environmentColliders = [];
-
             facilityRoom = new THREE.Group();
 
-            // Materials for industrial facility
+            // Materials for a dark, atmospheric brick/stone dungeon
             const wallMat = new THREE.MeshStandardMaterial({
-                color: 0x24243a,
-                roughness: 0.8,
-                metalness: 0.5
+                color: 0x1f1a24,
+                roughness: 0.95,
+                metalness: 0.1
             });
             const floorMat = new THREE.MeshStandardMaterial({
-                color: 0x181822,
-                roughness: 0.4,
-                metalness: 0.7
-            });
-            const pillarMat = new THREE.MeshStandardMaterial({
-                color: 0x4a157d,
-                roughness: 0.5,
-                metalness: 0.8
+                color: 0x141117,
+                roughness: 0.85,
+                metalness: 0.2
             });
 
-            // Large Facility Room Dimensions (20x20x10)
-            const floorGeo = new THREE.BoxGeometry(30, 0.5, 30);
+            // Large Dungeon Floor
+            const floorGeo = new THREE.BoxGeometry(40, 0.5, 40);
             const floor = new THREE.Mesh(floorGeo, floorMat);
             floor.position.y = -2.25;
             floor.receiveShadow = true;
             facilityRoom.add(floor);
             environmentColliders.push(floor);
 
-            const ceilingGeo = new THREE.BoxGeometry(30, 0.5, 30);
+            // High Dungeon Ceiling
+            const ceilingGeo = new THREE.BoxGeometry(40, 0.5, 40);
             const ceiling = new THREE.Mesh(ceilingGeo, wallMat);
             ceiling.position.y = 8;
             facilityRoom.add(ceiling);
             environmentColliders.push(ceiling);
 
-            // Walls
-            const wallBackGeo = new THREE.BoxGeometry(30, 10, 0.5);
-            const wallBack = new THREE.Mesh(wallBackGeo, wallMat);
-            wallBack.position.set(0, 3, -15);
+            // Perimeter Walls
+            const wallBack = new THREE.Mesh(new THREE.BoxGeometry(40, 10.5, 0.5), wallMat);
+            wallBack.position.set(0, 3, -20);
             facilityRoom.add(wallBack);
             environmentColliders.push(wallBack);
 
-            const wallFrontGeo = new THREE.BoxGeometry(30, 10, 0.5);
-            const wallFront = new THREE.Mesh(wallFrontGeo, wallMat);
-            wallFront.position.set(0, 3, 15);
+            const wallFront = new THREE.Mesh(new THREE.BoxGeometry(40, 10.5, 0.5), wallMat);
+            wallFront.position.set(0, 3, 20);
             facilityRoom.add(wallFront);
             environmentColliders.push(wallFront);
 
-            const wallLeftGeo = new THREE.BoxGeometry(0.5, 10, 30);
-            const wallLeft = new THREE.Mesh(wallLeftGeo, wallMat);
-            wallLeft.position.set(-15, 3, 0);
+            const wallLeft = new THREE.Mesh(new THREE.BoxGeometry(0.5, 10.5, 40), wallMat);
+            wallLeft.position.set(-20, 3, 0);
             facilityRoom.add(wallLeft);
             environmentColliders.push(wallLeft);
 
-            const wallRightGeo = new THREE.BoxGeometry(0.5, 10, 30);
-            const wallRight = new THREE.Mesh(wallRightGeo, wallMat);
-            wallRight.position.set(15, 3, 0);
+            const wallRight = new THREE.Mesh(new THREE.BoxGeometry(0.5, 10.5, 40), wallMat);
+            wallRight.position.set(20, 3, 0);
             facilityRoom.add(wallRight);
             environmentColliders.push(wallRight);
 
-            // Decorative Pillars & Industrial Beams
-            for (let x = -10; x <= 10; x += 10) {
-                for (let z = -10; z <= 10; z += 10) {
-                    if (x === 0 && z === 0) continue;
-                    const pillarGeo = new THREE.BoxGeometry(0.8, 10, 0.8);
-                    const pillar = new THREE.Mesh(pillarGeo, pillarMat);
-                    pillar.position.set(x, 3, z);
+            // Dungeon stone pillars and glowing torches
+            for (let x = -15; x <= 15; x += 10) {
+                for (let z = -15; z <= 15; z += 10) {
+                    if (Math.abs(x) < 5 && Math.abs(z) < 5) continue;
+                    
+                    const pillar = new THREE.Mesh(new THREE.BoxGeometry(1.2, 10.2, 1.2), wallMat);
+                    pillar.position.set(x, 2.85, z);
                     facilityRoom.add(pillar);
                     environmentColliders.push(pillar);
-                }
-            }
 
-            // Target Interactive Physics blocks (Jenga-style stack to hit)
-            targetsGroup = new THREE.Group();
-            facilityRoom.add(targetsGroup);
+                    // Torch fixture (Cylinder on side)
+                    const torch = new THREE.Mesh(
+                        new THREE.CylinderGeometry(0.03, 0.015, 0.3), 
+                        new THREE.MeshStandardMaterial({ color: 0x3d3021, roughness: 0.7 })
+                    );
+                    torch.position.set(x, 1.2, z + 0.65);
+                    torch.rotation.x = Math.PI / 6;
+                    facilityRoom.add(torch);
 
-            const blockGeo = new THREE.BoxGeometry(0.3, 0.3, 0.3);
-            const blockColors = [0xd39dff, 0xa855f7, 0x3b82f6];
-            for (let r = 0; r < 5; r++) { // rows
-                for (let c = -2; c <= 2; c++) { // cols
-                    const blockMat = new THREE.MeshStandardMaterial({
-                        color: blockColors[Math.abs(r + c) % blockColors.length],
-                        roughness: 0.3,
-                        metalness: 0.5
-                    });
-                    const blockMesh = new THREE.Mesh(blockGeo, blockMat);
-                    blockMesh.position.set(c * 0.35, -1.8 + r * 0.32, -3.5);
-                    blockMesh.userData = {
-                        velocity: new THREE.Vector3(),
-                        size: 0.15,
-                        isTargetBlock: true
-                    };
-                    targetsGroup.add(blockMesh);
+                    // Amber torch point light
+                    const torchLight = new THREE.PointLight(0xff6600, 1.2, 5);
+                    torchLight.position.set(x, 1.4, z + 0.85);
+                    facilityRoom.add(torchLight);
                 }
             }
 
             scene.add(facilityRoom);
         }
 
-        // Spawn a physics enabled ball directly in front of the camera/user
+        // Spawn a physics enabled fireball directly in front of the camera/user
         function spawnBallInFront() {
+            if (grabbedObj) {
+                window.showToast("You can only hold one fireball!");
+                return;
+            }
+
             window.playSFX('buy');
             window.vibrate();
 
             const spawnDir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
             const spawnPos = new THREE.Vector3().copy(camera.position).addScaledVector(spawnDir, 1.2);
 
-            const bubbleGeo = new THREE.SphereGeometry(0.12, 32, 32);
-            const mat = new THREE.MeshPhysicalMaterial({
-                color: 0xd39dff,
-                transparent: true,
-                opacity: 0.9,
-                roughness: 0.1,
-                transmission: 0.8,
-                thickness: 0.5,
-                clearcoat: 1.0
+            const sphereGeo = new THREE.SphereGeometry(0.12, 16, 16);
+            
+            // Outer glowing shell for high fidelity fiery aesthetic
+            const sphereMat = new THREE.MeshBasicMaterial({
+                color: 0xff3700
             });
-            const mesh = new THREE.Mesh(bubbleGeo, mat);
+            const mesh = new THREE.Mesh(sphereGeo, sphereMat);
             mesh.position.copy(spawnPos);
+
+            // Add dynamic light emitter child
+            const fireLight = new THREE.PointLight(0xffaa00, 2.5, 6);
+            mesh.add(fireLight);
+
             mesh.userData = {
-                velocity: spawnDir.multiplyScalar(0.15), // shoot forward slightly
+                velocity: spawnDir.multiplyScalar(0.15),
                 radius: 0.12,
-                isGrabbed: false
+                isGrabbed: false,
+                isFireball: true,
+                fireLight: fireLight,
+                creationTime: performance.now(),
+                impacted: false
             };
+
             bubblesGroup.add(mesh);
-            window.showToast("Ball Spawned!");
+            window.showToast("Summoned Fireball!");
+        }
+
+        // Trigger dynamic explosion particles and light burst
+        function triggerExplosion(position) {
+            window.playProceduralSFX('hit');
+            
+            // Explosion visual light flash
+            const flash = new THREE.PointLight(0xff4500, 8, 8);
+            flash.position.copy(position);
+            scene.add(flash);
+
+            const sparkGroup = new THREE.Group();
+            scene.add(sparkGroup);
+
+            const sparkGeo = new THREE.SphereGeometry(0.04, 8, 8);
+            const sparkMat = new THREE.MeshBasicMaterial({ color: 0xffaa00 });
+
+            // Create individual spark vectors
+            const sparks = [];
+            for (let i = 0; i < 15; i++) {
+                const sp = new THREE.Mesh(sparkGeo, sparkMat);
+                sp.position.copy(position);
+                sparkGroup.add(sp);
+
+                const dir = new THREE.Vector3(
+                    (Math.random() - 0.5) * 2,
+                    (Math.random() - 0.5) * 2 + 0.3,
+                    (Math.random() - 0.5) * 2
+                ).normalize();
+                
+                sparks.push({
+                    mesh: sp,
+                    dir: dir,
+                    speed: 0.05 + Math.random() * 0.08
+                });
+            }
+
+            particleExplosions.push({
+                flash: flash,
+                sparks: sparks,
+                group: sparkGroup,
+                time: performance.now()
+            });
         }
 
         // Init 3D Rendering Elements
         function init3D() {
             const canvas = document.getElementById('vr-canvas');
             scene = new THREE.Scene();
-            scene.background = new THREE.Color('#05020a'); // Ultra-dark industrial bg
-            scene.fog = new THREE.FogExp2('#05020a', 0.1);
+            scene.background = new THREE.Color('#030107'); // Dark dungeon void
+            scene.fog = new THREE.FogExp2('#030107', 0.12);
 
             camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 100);
             camera.position.set(0, 0, 5);
@@ -4128,10 +4161,16 @@
             scene.add(xrCameraRig);
             xrCameraRig.add(camera);
 
-            renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
-            renderer.setSize(window.innerWidth, window.innerHeight);
-            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-            renderer.xr.enabled = true;
+            try {
+                renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+                renderer.setSize(window.innerWidth, window.innerHeight);
+                renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+                renderer.xr.enabled = true;
+            } catch (e) {
+                console.error("WebGL initialization failed", e);
+                window.showToast("WebGL support required for 3D sandbox mode!");
+                return;
+            }
 
             controls = new OrbitControls(camera, renderer.domElement);
             controls.enableDamping = true;
@@ -4139,43 +4178,23 @@
             controls.maxDistance = 12;
             controls.minDistance = 2;
 
-            // Cool lighting for VR focus
-            const ambientLight = new THREE.AmbientLight(0x1a0f30, 0.8);
+            // Ambient base illumination
+            const ambientLight = new THREE.AmbientLight(0x0a0614, 1.0);
             scene.add(ambientLight);
 
-            const dirLight = new THREE.DirectionalLight(0xd39dff, 1.5);
+            const dirLight = new THREE.DirectionalLight(0xa78bfa, 0.8);
             dirLight.position.set(5, 12, 5);
             scene.add(dirLight);
 
-            // Purple glowing accent light
-            handLight = new THREE.PointLight(0xa855f7, 4, 10);
-            handLight.position.set(0, 2, 0);
-            scene.add(handLight);
+            // Setup target visual teleport targeting halo
+            const haloGeo = new THREE.RingGeometry(0.18, 0.22, 32);
+            const haloMat = new THREE.MeshBasicMaterial({ color: 0x06b6d4, side: THREE.DoubleSide, transparent: true, opacity: 0.8 });
+            haloMesh = new THREE.Mesh(haloGeo, haloMat);
+            haloMesh.rotation.x = -Math.PI / 2;
+            haloMesh.visible = false;
+            scene.add(haloMesh);
 
-            // Dark Frutiger Aero wavy ground decoration
-            const waveGeo = new THREE.PlaneGeometry(35, 35, 32, 32);
-            const pos = waveGeo.attributes.position;
-            for (let i = 0; i < pos.count; i++) {
-                const vx = pos.getX(i);
-                const vy = pos.getY(i);
-                const vz = Math.sin(vx * 0.25) * Math.cos(vy * 0.25) * 0.8;
-                pos.setZ(i, vz);
-            }
-            waveGeo.computeVertexNormals();
-            const waveMat = new THREE.MeshPhysicalMaterial({
-                color: 0x110526,
-                roughness: 0.1,
-                metalness: 0.9,
-                clearcoat: 1.0,
-                clearcoatRoughness: 0.05,
-                flatShading: true
-            });
-            waveMesh = new THREE.Mesh(waveGeo, waveMat);
-            waveMesh.rotation.x = -Math.PI / 2;
-            waveMesh.position.y = -2.1;
-            scene.add(waveMesh);
-
-            // Build facility room
+            // Build dungeon interior
             buildProceduralFacility();
 
             // Initialize structural groups to prevent undefined errors when state changes
@@ -4201,40 +4220,9 @@
                 });
             }
 
-            // Floating Bubble Particles / Interactive physics balls
+            // Interactive fireballs pool
             bubblesGroup = new THREE.Group();
             scene.add(bubblesGroup);
-            const bubbleGeo = new THREE.SphereGeometry(0.12, 32, 32);
-            for (let i = 0; i < 20; i++) {
-                const mat = new THREE.MeshPhysicalMaterial({
-                    color: 0xd39dff,
-                    transparent: true,
-                    opacity: 0.8,
-                    roughness: 0,
-                    transmission: 0.7,
-                    thickness: 0.5,
-                    clearcoat: 1.0
-                });
-                const mesh = new THREE.Mesh(bubbleGeo, mat);
-                mesh.position.set(
-                    (Math.random() - 0.5) * 8,
-                    1.5 + (Math.random() - 0.5) * 1.5,
-                    (Math.random() - 0.5) * 8 - 2
-                );
-                
-                // Physics properties
-                mesh.userData = {
-                    velocity: new THREE.Vector3(
-                        (Math.random() - 0.5) * 0.2,
-                        (Math.random() - 0.5) * 0.2,
-                        (Math.random() - 0.5) * 0.2
-                    ),
-                    radius: 0.12,
-                    isGrabbed: false
-                };
-                
-                bubblesGroup.add(mesh);
-            }
 
             // Raycasting & Pointer Events setup
             raycaster = new THREE.Raycaster();
@@ -4249,7 +4237,7 @@
 
             renderer.setAnimationLoop(animate);
 
-            // Monitor WebXR session state changes
+            // Monitor WebXR session state changes to clear overlays
             renderer.xr.addEventListener('sessionstart', () => {
                 window.toggle3DHub(true);
             });
@@ -4276,7 +4264,7 @@
             for (let i = 0; i < 25; i++) {
                 const gradientColor = new THREE.Color().lerpColors(
                     new THREE.Color('#4a157d'),
-                    new THREE.Color('#e0b3ff'),
+                    new THREE.Color('#d39dff'),
                     i / 24
                 );
                 const jointMat = new THREE.MeshPhysicalMaterial({
@@ -4295,7 +4283,8 @@
 
         // Grabbing & Fist Mechanics
         function onXRSelect(controller) {
-            // Check for nearest bubble to grab or pull
+            if (grabbedObj) return; // Prevent grabbing multiple fireballs at once
+
             const controllerPos = new THREE.Vector3().setFromMatrixPosition(controller.matrixWorld);
             let nearestBubble = null;
             let minDist = 0.5; // grab range limit
@@ -4312,19 +4301,6 @@
                 grabbedObj = nearestBubble;
                 grabbedObj.userData.isGrabbed = true;
                 activeController = controller;
-            } else {
-                // If controller trigger held, test for Fist/Pull mechanism
-                // Cast ray to pull bubble/ball towards hand
-                const tempMatrix = new THREE.Matrix4().identity().extractRotation(controller.matrixWorld);
-                raycaster.ray.origin.copy(controllerPos);
-                raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
-
-                const intersects = raycaster.intersectObjects(bubblesGroup.children);
-                if (intersects.length > 0) {
-                    const hitBubble = intersects[0].object;
-                    hitBubble.userData.pullingTarget = controller;
-                    hitBubble.userData.pullSpeed = 0.15;
-                }
             }
         }
 
@@ -4333,8 +4309,8 @@
                 // Release and throw
                 grabbedObj.userData.isGrabbed = false;
                 
-                // Derive throw velocity from controller velocity (mocked via relative offset)
-                const releaseVel = new THREE.Vector3(0, 0.08, -0.15);
+                // Derive throw velocity from controller matrix direction
+                const releaseVel = new THREE.Vector3(0, 0.08, -0.22);
                 const tempMatrix = new THREE.Matrix4().identity().extractRotation(controller.matrixWorld);
                 releaseVel.applyMatrix4(tempMatrix);
                 
@@ -4342,16 +4318,12 @@
                 grabbedObj = null;
                 activeController = null;
             }
-
-            bubblesGroup.children.forEach(bubble => {
-                if (bubble.userData.pullingTarget === controller) {
-                    bubble.userData.pullingTarget = null;
-                }
-            });
         }
 
         // Hand tracking pinch/fist implementations
         function onXRPinch(hand) {
+            if (grabbedObj) return; // Enforce only holding one ball/fireball limit
+
             const indexTip = hand.children[9];
             if (!indexTip) return;
 
@@ -4377,7 +4349,7 @@
         function onXRPinchEnd(hand) {
             if (grabbedObj && activeHand === hand) {
                 grabbedObj.userData.isGrabbed = false;
-                grabbedObj.userData.velocity.set(0, 0.05, -0.1);
+                grabbedObj.userData.velocity.set(0, 0.08, -0.15);
                 grabbedObj = null;
                 activeHand = null;
             }
@@ -4417,29 +4389,9 @@
         function animate(timestamp) {
             if (controls) controls.update();
 
-            // Animate wave background (Aero liquid ripple effect)
-            if (waveMesh) {
-                const pos = waveMesh.geometry.attributes.position;
-                for (let i = 0; i < pos.count; i++) {
-                    const vx = pos.getX(i);
-                    const vy = pos.getY(i);
-                    const vz = Math.sin(vx * 0.25 + timestamp * 0.001) * Math.cos(vy * 0.25 + timestamp * 0.001) * 0.6;
-                    pos.setZ(i, vz);
-                }
-                waveMesh.geometry.computeVertexNormals();
-                waveMesh.geometry.attributes.position.needsUpdate = true;
-            }
-
-            // Move dynamic point light
-            if (handLight) {
-                handLight.position.x = Math.sin(timestamp * 0.001) * 4;
-                handLight.position.z = -1 + Math.cos(timestamp * 0.001) * 2;
-            }
-
-            // Physics interaction loop for the ambient balls
-            bubblesGroup.children.forEach(bubble => {
+            // Fireball update logic loop (Gravity, light pulsations, and explosion triggering)
+            bubblesGroup.children.forEach((bubble, idx) => {
                 if (bubble.userData.isGrabbed) {
-                    // Lock position relative to current active hand/controller
                     let targetPos = new THREE.Vector3();
                     if (activeController) {
                         targetPos.setFromMatrixPosition(activeController.matrixWorld);
@@ -4449,82 +4401,72 @@
                     }
                     bubble.position.lerp(targetPos, 0.35);
                     bubble.userData.velocity.set(0, 0, 0);
-                } else if (bubble.userData.pullingTarget) {
-                    // Pulling mechanism (fist pull)
-                    const targetPos = new THREE.Vector3().setFromMatrixPosition(bubble.userData.pullingTarget.matrixWorld);
-                    bubble.position.lerp(targetPos, bubble.userData.pullSpeed);
-                    
-                    // Snap grab if very close
-                    if (bubble.position.distanceTo(targetPos) < 0.2) {
-                        bubble.userData.isGrabbed = true;
-                        activeController = bubble.userData.pullingTarget;
-                        bubble.userData.pullingTarget = null;
-                    }
                 } else {
-                    // Apply physics (gravity & environmental bounds check)
-                    bubble.userData.velocity.y -= 0.005; // gravity
+                    // Apply downward gravity pull to flying fireballs
+                    bubble.userData.velocity.y -= 0.003;
                     bubble.position.add(bubble.userData.velocity);
 
-                    // Bounce off ground boundary
-                    if (bubble.position.y < -1.7 + bubble.userData.radius) {
-                        bubble.position.y = -1.7 + bubble.userData.radius;
-                        bubble.userData.velocity.y *= -0.7; // damp bounce
-                        bubble.userData.velocity.x *= 0.9;
-                        bubble.userData.velocity.z *= 0.9;
+                    // Pulse light emitter scale
+                    if (bubble.userData.fireLight) {
+                        bubble.userData.fireLight.intensity = 2.0 + Math.sin(timestamp * 0.015) * 0.6;
                     }
 
-                    // Collide with environment meshes bounds
-                    environmentColliders.forEach(colMesh => {
-                        const box = new THREE.Box3().setFromObject(colMesh);
-                        if (box.containsPoint(bubble.position)) {
-                            // Simple push back vector bounce
-                            bubble.userData.velocity.negate().multiplyScalar(0.7);
-                            bubble.position.add(bubble.userData.velocity);
+                    // Check for ground impact or environmental collider hits
+                    let hasCollided = false;
+                    
+                    if (bubble.position.y < -2.15 + bubble.userData.radius) {
+                        hasCollided = true;
+                    } else {
+                        // Check static geometry bounding boxes
+                        for (let colMesh of environmentColliders) {
+                            const box = new THREE.Box3().setFromObject(colMesh);
+                            // Avoid registering initial ground collision too early
+                            if (colMesh.position.y > -2.0 && box.containsPoint(bubble.position)) {
+                                hasCollided = true;
+                                break;
+                            }
                         }
-                    });
+                    }
 
-                    // Decay initial throw speeds back to default drift
-                    bubble.userData.velocity.x *= 0.98;
-                    bubble.userData.velocity.z *= 0.98;
-                    if (Math.abs(bubble.userData.velocity.x) < 0.001) bubble.userData.velocity.x = (Math.random() - 0.5) * 0.008;
-                    if (Math.abs(bubble.userData.velocity.z) < 0.001) bubble.userData.velocity.z = (Math.random() - 0.5) * 0.008;
+                    if (hasCollided && !bubble.userData.impacted) {
+                        bubble.userData.impacted = true;
+                        triggerExplosion(bubble.position);
+                        
+                        // Clean up fireball mesh from the scene graph
+                        setTimeout(() => {
+                            bubblesGroup.remove(bubble);
+                            if (bubble.geometry) bubble.geometry.dispose();
+                            if (bubble.material) bubble.material.dispose();
+                        }, 20);
+                    }
                 }
             });
 
-            // Bobbing animation for tiles to keep scene dynamic
-            if (tiles3DGroup && tiles3DGroup.visible) {
-                tiles3DGroup.children.forEach((mesh, index) => {
-                    mesh.rotation.y = Math.sin(timestamp * 0.0015 + index) * 0.03;
-                    mesh.position.y = ((1 - Math.floor(index / 3)) * 1.3 - 0.3) + Math.sin(timestamp * 0.002 + index) * 0.01;
-                });
-            }
-
-            if (logoMesh && logoMesh.visible) {
-                logoMesh.position.y = 1.7 + Math.sin(timestamp * 0.001) * 0.03;
-            }
-
-            // Arm-swing locomotion logic
-            let swingSpeed = 0;
-            for (let index = 0; index < 2; index++) {
-                const hand = renderer.xr.getHand(index);
-                if (hand && hand.visible) {
-                    const currentHandPos = new THREE.Vector3().setFromMatrixPosition(hand.matrixWorld);
-                    const lastHandPos = lastHandPositions[index];
-                    const dist = currentHandPos.distanceTo(lastHandPos);
-                    if (dist > 0.01 && dist < 0.25) {
-                        swingSpeed += dist;
-                    }
-                    lastHandPositions[index].copy(currentHandPos);
+            // Update explosion particles and light bursts decay
+            particleExplosions.forEach((exp, idx) => {
+                const elapsed = performance.now() - exp.time;
+                if (elapsed > 1200) {
+                    scene.remove(exp.flash);
+                    scene.remove(exp.group);
+                    particleExplosions.splice(idx, 1);
+                } else {
+                    // Fade light flash intensity down
+                    exp.flash.intensity = Math.max(0, 8.0 * (1.0 - elapsed / 600));
+                    
+                    // Direct spark translations outward
+                    exp.sparks.forEach(sp => {
+                        sp.mesh.position.addScaledVector(sp.dir, sp.speed);
+                        sp.speed *= 0.95; // spark drag deceleration
+                        
+                        // Fade colors to red/dark grey
+                        if (sp.mesh.material) {
+                            sp.mesh.material.color.lerp(new THREE.Color(0x3a3a3a), 0.05);
+                        }
+                    });
                 }
-            }
-            if (swingSpeed > 0.02 && xrCameraRig) {
-                const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
-                dir.y = 0; 
-                dir.normalize();
-                xrCameraRig.position.addScaledVector(dir, swingSpeed * 1.6);
-            }
+            });
 
-            // Hand tracking joints and gestures (fist, snap detection)
+            // Left Hand custom gesture locomotion mapping: peace/scissors targeting & teleport
             for (let index = 0; index < 2; index++) {
                 const hand = renderer.xr.getHand(index);
                 if (hand && hand.visible && hand.joints) {
@@ -4542,30 +4484,57 @@
                         }
                     });
 
-                    // Hand Gesture 1: Fist Detection (all fingers folded)
-                    const wrist = hand.joints['wrist'];
-                    const thumb = hand.joints['thumb-tip'];
-                    const indexF = hand.joints['index-finger-tip'];
-                    const middleF = hand.joints['middle-finger-tip'];
-                    const ringF = hand.joints['ring-finger-tip'];
-                    const pinkyF = hand.joints['pinky-finger-tip'];
+                    // Determine handedness context safely
+                    const handedness = hand.inputSource ? hand.inputSource.handedness : (index === 0 ? 'left' : 'right');
 
-                    if (wrist && thumb && indexF && middleF && ringF && pinkyF) {
-                        const distSum = 
-                            indexF.position.distanceTo(wrist.position) +
-                            middleF.position.distanceTo(wrist.position) +
-                            ringF.position.distanceTo(wrist.position) +
-                            pinkyF.position.distanceTo(wrist.position);
+                    if (handedness === 'left') {
+                        const wrist = hand.joints['wrist'];
+                        const indexTip = hand.joints['index-finger-tip'];
+                        const middleTip = hand.joints['middle-finger-tip'];
+                        const ringTip = hand.joints['ring-finger-tip'];
+                        const pinkyTip = hand.joints['pinky-finger-tip'];
 
-                        // If hands form a tight fist, drag balls towards hand position
-                        if (distSum < 0.35) {
-                            bubblesGroup.children.forEach(bubble => {
-                                const d = bubble.position.distanceTo(wrist.position);
-                                if (d < 1.8) {
-                                    bubble.userData.pullingTarget = wrist;
-                                    bubble.userData.pullSpeed = 0.08;
+                        if (wrist && indexTip && middleTip && ringTip && pinkyTip) {
+                            const indexLen = indexTip.position.distanceTo(wrist.position);
+                            const middleLen = middleTip.position.distanceTo(wrist.position);
+                            const ringLen = ringTip.position.distanceTo(wrist.position);
+                            const pinkyLen = pinkyTip.position.distanceTo(wrist.position);
+                            
+                            const distanceTips = indexTip.position.distanceTo(middleTip.position);
+
+                            // Scissors/Peace state criteria: Index & Middle fingers straight, Ring & Pinky curled
+                            if (indexLen > 0.16 && middleLen > 0.16 && ringLen < 0.11 && pinkyLen < 0.11) {
+                                if (distanceTips > 0.045) {
+                                    // Aiming raycast tracking
+                                    leftScissorsActive = true;
+                                    const rayDir = new THREE.Vector3().subVectors(indexTip.position, wrist.position).normalize();
+                                    raycaster.ray.origin.copy(wrist.position);
+                                    raycaster.ray.direction.copy(rayDir);
+
+                                    // Intersect floor level
+                                    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 2.25);
+                                    const intersectionPoint = new THREE.Vector3();
+                                    if (raycaster.ray.intersectPlane(plane, intersectionPoint)) {
+                                        // Bound navigation within sandbox map limits
+                                        if (intersectionPoint.length() < 22) {
+                                            haloMesh.visible = true;
+                                            haloMesh.position.copy(intersectionPoint);
+                                        } else {
+                                            haloMesh.visible = false;
+                                        }
+                                    }
+                                } else if (distanceTips < 0.024 && leftScissorsActive && haloMesh.visible) {
+                                    // Unite pointer and middle finger triggers instant teleportation
+                                    leftScissorsActive = false;
+                                    xrCameraRig.position.set(haloMesh.position.x, xrCameraRig.position.y, haloMesh.position.z);
+                                    window.playSFX('tap');
+                                    window.vibrate();
+                                    haloMesh.visible = false;
                                 }
-                            });
+                            } else {
+                                leftScissorsActive = false;
+                                haloMesh.visible = false;
+                            }
                         }
                     }
 
@@ -4662,9 +4631,6 @@
             // Hide Hub elements when viewing a tab in 3D
             if (tiles3DGroup) tiles3DGroup.visible = false;
             if (logoMesh) logoMesh.visible = false;
-
-            // Create common navigation back button
-            create3DBackButton();
 
             if (screenId === 'games') {
                 window.appState.games.forEach((game, idx) => {
