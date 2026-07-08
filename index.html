@@ -3949,6 +3949,11 @@
         let lastPinchState = [false, false]; // [left, right]
         let leftAimingActive = false;
         let leftTeleportTarget = null;
+        let lastTeleportTime = 0;
+        const TELEPORT_COOLDOWN = 3000;
+        let isTeleporting = false;
+        let targetTeleportPos = null;
+        let handPosHistory = [];
         
         // Rig to move in VR space
         let xrCameraRig = null;
@@ -4370,11 +4375,24 @@
             if (grabbedObj && activeController === controller) {
                 grabbedObj.userData.isGrabbed = false;
                 
-                const releaseVel = new THREE.Vector3(0, 0.08, -0.22);
-                const tempMatrix = new THREE.Matrix4().identity().extractRotation(controller.matrixWorld);
-                releaseVel.applyMatrix4(tempMatrix);
+                let throwVel = new THREE.Vector3();
+                if (handPosHistory.length >= 2) {
+                    const first = handPosHistory[0];
+                    const last = handPosHistory[handPosHistory.length - 1];
+                    const dt = (last.time - first.time) / 1000;
+                    if (dt > 0) {
+                        throwVel.subVectors(last.pos, first.pos).divideScalar(dt).multiplyScalar(0.04);
+                    }
+                }
                 
-                grabbedObj.userData.velocity.copy(releaseVel);
+                if (throwVel.length() < 0.05) {
+                    // Fallback to controller forward direction
+                    throwVel.set(0, 0, -1);
+                    const tempMatrix = new THREE.Matrix4().identity().extractRotation(controller.matrixWorld);
+                    throwVel.applyMatrix4(tempMatrix).multiplyScalar(0.28);
+                }
+                
+                grabbedObj.userData.velocity.copy(throwVel);
                 grabbedObj = null;
                 activeController = null;
             }
@@ -4413,7 +4431,31 @@
         function onXRPinchEnd(hand) {
             if (grabbedObj && activeHand === hand) {
                 grabbedObj.userData.isGrabbed = false;
-                grabbedObj.userData.velocity.set(0, 0.08, -0.15);
+                
+                let throwVel = new THREE.Vector3();
+                if (handPosHistory.length >= 2) {
+                    const first = handPosHistory[0];
+                    const last = handPosHistory[handPosHistory.length - 1];
+                    const dt = (last.time - first.time) / 1000;
+                    if (dt > 0) {
+                        throwVel.subVectors(last.pos, first.pos).divideScalar(dt).multiplyScalar(0.04);
+                    }
+                }
+                
+                if (throwVel.length() < 0.05) {
+                    // Fallback to pointing orientation direction
+                    const indexTip = hand.joints['index-finger-tip'];
+                    const wrist = hand.joints['wrist'];
+                    if (indexTip && wrist) {
+                        const tipW = new THREE.Vector3().setFromMatrixPosition(indexTip.matrixWorld);
+                        const wristW = new THREE.Vector3().setFromMatrixPosition(wrist.matrixWorld);
+                        throwVel.subVectors(tipW, wristW).normalize().multiplyScalar(0.28);
+                    } else {
+                        throwVel.set(0, 0, -0.22);
+                    }
+                }
+                
+                grabbedObj.userData.velocity.copy(throwVel);
                 grabbedObj = null;
                 activeHand = null;
             }
@@ -4441,8 +4483,12 @@
                     bubble.userData.isGrabbed = true;
                     setTimeout(() => {
                         bubble.userData.isGrabbed = false;
-                        bubble.userData.velocity.set((Math.random() - 0.5) * 0.6, 0.8, -0.6);
-                    }, 500);
+                        // Throw in pointing raycaster direction
+                        const throwDir = new THREE.Vector3();
+                        raycaster.ray.direction.normalize();
+                        throwDir.copy(raycaster.ray.direction).multiplyScalar(0.25);
+                        bubble.userData.velocity.copy(throwDir);
+                    }, 300);
                 }
             }
         }
@@ -4455,6 +4501,32 @@
 
         function animate(timestamp) {
             if (controls) controls.update();
+
+            // Smooth Teleport Lerp
+            if (isTeleporting && targetTeleportPos) {
+                const target = new THREE.Vector3(targetTeleportPos.x, xrCameraRig.position.y, targetTeleportPos.z);
+                xrCameraRig.position.lerp(target, 0.1);
+                if (xrCameraRig.position.distanceTo(target) < 0.05) {
+                    xrCameraRig.position.copy(target);
+                    isTeleporting = false;
+                    targetTeleportPos = null;
+                }
+            }
+
+            // Track hand position history for realistic physics release/throw velocity
+            if (grabbedObj && (activeHand || activeController)) {
+                let currentPos = new THREE.Vector3();
+                if (activeController) {
+                    currentPos.setFromMatrixPosition(activeController.matrixWorld);
+                } else if (activeHand) {
+                    const wrist = activeHand.joints['wrist'];
+                    if (wrist) currentPos.setFromMatrixPosition(wrist.matrixWorld);
+                }
+                handPosHistory.push({ pos: currentPos.clone(), time: performance.now() });
+                if (handPosHistory.length > 5) handPosHistory.shift();
+            } else {
+                handPosHistory = [];
+            }
 
             // Fireball update logic loop (Gravity, light pulsations, and explosion triggering)
             bubblesGroup.children.forEach((bubble, idx) => {
@@ -4558,6 +4630,20 @@
                             // Pointing check: index extended significantly further than middle
                             const isPointing = (indexWristDist > middleWristDist + 0.015);
 
+                            const now = performance.now();
+                            const onCooldown = (now - lastTeleportTime < TELEPORT_COOLDOWN);
+
+                            // Update Halo color based on cooldown
+                            if (haloMesh) {
+                                if (onCooldown) {
+                                    haloMesh.material.color.setHex(0xff3333);
+                                    haloLight.color.setHex(0xff3333);
+                                } else {
+                                    haloMesh.material.color.setHex(0x06b6d4);
+                                    haloLight.color.setHex(0x06b6d4);
+                                }
+                            }
+
                             if (isPointing && !isPinching) {
                                 // Pointing vector follows the index finger bone direction (MCP to Tip)
                                 const tipW = new THREE.Vector3().setFromMatrixPosition(indexTip.matrixWorld);
@@ -4588,10 +4674,17 @@
                                     leftTeleportTarget = null;
                                 }
                             } else if (isPinching && leftTeleportTarget) {
-                                // Teleport if we have a locked target from aiming
-                                xrCameraRig.position.set(leftTeleportTarget.x, xrCameraRig.position.y, leftTeleportTarget.z);
-                                window.playSFX('tap');
-                                window.vibrate();
+                                // Teleport if we have a locked target from aiming AND not on cooldown
+                                if (!onCooldown && !isTeleporting) {
+                                    isTeleporting = true;
+                                    targetTeleportPos = leftTeleportTarget.clone();
+                                    lastTeleportTime = now;
+                                    window.playSFX('tap');
+                                    window.vibrate();
+                                    window.showToast("Teleporting!");
+                                } else if (onCooldown) {
+                                    window.showToast(`Teleport on cooldown: ${Math.ceil((TELEPORT_COOLDOWN - (now - lastTeleportTime))/1000)}s`);
+                                }
                                 leftTeleportTarget = null;
                                 haloMesh.visible = false;
                                 haloLight.visible = false;
@@ -4610,7 +4703,6 @@
                         if (grabbedObj && activeHand === hand) {
                             const thumbTip = hand.joints['thumb-tip'];
                             const indexTip = hand.joints['index-finger-tip'];
-                            const indexMcp = hand.joints['index-finger-mcp'];
                             const wrist = hand.joints['wrist'];
 
                             if (thumbTip && indexTip) {
@@ -4619,18 +4711,27 @@
                                 if (dist > 0.07) {
                                     grabbedObj.userData.isGrabbed = false;
                                     
-                                    const throwDir = new THREE.Vector3();
-                                    if (indexTip && wrist) {
-                                        // Better 'hand facing' vector: from wrist through index knuckle/tip
-                                        const tipW = new THREE.Vector3().setFromMatrixPosition(indexTip.matrixWorld);
-                                        const wristW = new THREE.Vector3().setFromMatrixPosition(wrist.matrixWorld);
-                                        throwDir.subVectors(tipW, wristW).normalize();
-                                    } else {
-                                        throwDir.set(0, 0, -1).applyQuaternion(camera.quaternion);
+                                    let throwVel = new THREE.Vector3();
+                                    if (handPosHistory.length >= 2) {
+                                        const first = handPosHistory[0];
+                                        const last = handPosHistory[handPosHistory.length - 1];
+                                        const dt = (last.time - first.time) / 1000;
+                                        if (dt > 0) {
+                                            throwVel.subVectors(last.pos, first.pos).divideScalar(dt).multiplyScalar(0.04);
+                                        }
                                     }
-                                    throwDir.multiplyScalar(0.28); 
                                     
-                                    grabbedObj.userData.velocity.copy(throwDir);
+                                    if (throwVel.length() < 0.05) {
+                                        if (indexTip && wrist) {
+                                            const tipW = new THREE.Vector3().setFromMatrixPosition(indexTip.matrixWorld);
+                                            const wristW = new THREE.Vector3().setFromMatrixPosition(wrist.matrixWorld);
+                                            throwVel.subVectors(tipW, wristW).normalize().multiplyScalar(0.28);
+                                        } else {
+                                            throwVel.set(0, 0, -1).applyQuaternion(camera.quaternion).multiplyScalar(0.28);
+                                        }
+                                    }
+                                    
+                                    grabbedObj.userData.velocity.copy(throwVel);
                                     grabbedObj = null;
                                     activeHand = null;
                                     window.showToast("Fireball Thrown!");
