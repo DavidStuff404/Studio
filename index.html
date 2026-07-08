@@ -3946,10 +3946,10 @@
         let lastSnapTime = 0;
         let lastPinchState = [false, false]; // [left, right]
         let leftScissorsActive = false;
+        let leftAimingActive = false;
         
-        // Arm-swing locomotion tracking variables
-        let lastHandPositions = [new THREE.Vector3(), new THREE.Vector3()];
-        let xrCameraRig = null; // Rig to move in VR space
+        // Rig to move in VR space
+        let xrCameraRig = null;
 
         // Missing visual & structural 3D helpers (Stubbed out to prevent errors)
         let tiles3DGroup = null;
@@ -4063,8 +4063,8 @@
             scene.add(facilityRoom);
         }
 
-        // Spawn a physics enabled fireball directly in front of the camera/user
-        function spawnBallInFront() {
+        // Spawn a physics enabled fireball directly in front of the camera/user or attached to a hand
+        function spawnBallInFront(sourceHand = null) {
             if (grabbedObj) {
                 window.showToast("You can only hold one fireball!");
                 return;
@@ -4073,25 +4073,45 @@
             window.playSFX('buy');
             window.vibrate();
 
-            const spawnDir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
-            const spawnPos = new THREE.Vector3().copy(camera.position).addScaledVector(spawnDir, 1.2);
+            let spawnPos = new THREE.Vector3();
+            if (sourceHand) {
+                if (sourceHand.joints && sourceHand.joints['wrist']) {
+                    spawnPos.copy(sourceHand.joints['wrist'].position);
+                } else {
+                    spawnPos.setFromMatrixPosition(sourceHand.matrixWorld);
+                }
+            } else {
+                const spawnDir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+                spawnPos.copy(camera.position).addScaledVector(spawnDir, 1.2);
+            }
 
-            const sphereGeo = new THREE.SphereGeometry(0.12, 16, 16);
-            
-            // Outer glowing shell for high fidelity fiery aesthetic
-            const sphereMat = new THREE.MeshBasicMaterial({
-                color: 0xff3700
+            // Create Fireball core and glow group
+            const fireballGroup = new THREE.Group();
+            fireballGroup.position.copy(spawnPos);
+
+            // Core sphere (bright orange/yellow)
+            const coreGeo = new THREE.SphereGeometry(0.08, 16, 16);
+            const coreMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+            const coreMesh = new THREE.Mesh(coreGeo, coreMat);
+            fireballGroup.add(coreMesh);
+
+            // Glowing shell
+            const shellGeo = new THREE.SphereGeometry(0.13, 16, 16);
+            const shellMat = new THREE.MeshBasicMaterial({ 
+                color: 0xff3700, 
+                transparent: true, 
+                opacity: 0.65 
             });
-            const mesh = new THREE.Mesh(sphereGeo, sphereMat);
-            mesh.position.copy(spawnPos);
+            const shellMesh = new THREE.Mesh(shellGeo, shellMat);
+            fireballGroup.add(shellMesh);
 
             // Add dynamic light emitter child
             const fireLight = new THREE.PointLight(0xffaa00, 2.5, 6);
-            mesh.add(fireLight);
+            fireballGroup.add(fireLight);
 
-            mesh.userData = {
-                velocity: spawnDir.multiplyScalar(0.15),
-                radius: 0.12,
+            fireballGroup.userData = {
+                velocity: sourceHand ? new THREE.Vector3() : new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion).multiplyScalar(0.15),
+                radius: 0.13,
                 isGrabbed: false,
                 isFireball: true,
                 fireLight: fireLight,
@@ -4099,8 +4119,23 @@
                 impacted: false
             };
 
-            bubblesGroup.add(mesh);
-            window.showToast("Summoned Fireball!");
+            bubblesGroup.add(fireballGroup);
+
+            // Lock immediately to the summoning hand/controller
+            if (sourceHand) {
+                grabbedObj = fireballGroup;
+                grabbedObj.userData.isGrabbed = true;
+                if (sourceHand.joints) {
+                    activeHand = sourceHand;
+                    activeController = null;
+                } else {
+                    activeController = sourceHand;
+                    activeHand = null;
+                }
+                window.showToast("Fireball summoned to hand!");
+            } else {
+                window.showToast("Summoned Fireball!");
+            }
         }
 
         // Trigger dynamic explosion particles and light burst
@@ -4115,26 +4150,28 @@
             const sparkGroup = new THREE.Group();
             scene.add(sparkGroup);
 
-            const sparkGeo = new THREE.SphereGeometry(0.04, 8, 8);
-            const sparkMat = new THREE.MeshBasicMaterial({ color: 0xffaa00 });
-
-            // Create individual spark vectors
+            // Create 25 dramatic sparks
+            const sparkGeo = new THREE.SphereGeometry(0.05, 8, 8);
             const sparks = [];
-            for (let i = 0; i < 15; i++) {
+            for (let i = 0; i < 25; i++) {
+                const sparkMat = new THREE.MeshBasicMaterial({ 
+                    color: i % 2 === 0 ? 0xffaa00 : 0xff3700 
+                });
                 const sp = new THREE.Mesh(sparkGeo, sparkMat);
                 sp.position.copy(position);
                 sparkGroup.add(sp);
 
                 const dir = new THREE.Vector3(
                     (Math.random() - 0.5) * 2,
-                    (Math.random() - 0.5) * 2 + 0.3,
+                    (Math.random() - 0.5) * 2 + 0.4, // upward bias
                     (Math.random() - 0.5) * 2
                 ).normalize();
                 
                 sparks.push({
                     mesh: sp,
                     dir: dir,
-                    speed: 0.05 + Math.random() * 0.08
+                    speed: 0.06 + Math.random() * 0.1,
+                    material: sparkMat
                 });
             }
 
@@ -4283,11 +4320,15 @@
 
         // Grabbing & Fist Mechanics
         function onXRSelect(controller) {
-            if (grabbedObj) return; // Prevent grabbing multiple fireballs at once
+            if (grabbedObj) return; 
+
+            // Only allow right controller/hand actions for fireballs
+            const handedness = controller.inputSource ? controller.inputSource.handedness : 'right';
+            if (handedness !== 'right') return;
 
             const controllerPos = new THREE.Vector3().setFromMatrixPosition(controller.matrixWorld);
             let nearestBubble = null;
-            let minDist = 0.5; // grab range limit
+            let minDist = 0.5; 
 
             bubblesGroup.children.forEach(bubble => {
                 const d = bubble.position.distanceTo(controllerPos);
@@ -4304,12 +4345,11 @@
             }
         }
 
+        // Drop / release
         function onXRSelectEnd(controller) {
             if (grabbedObj && activeController === controller) {
-                // Release and throw
                 grabbedObj.userData.isGrabbed = false;
                 
-                // Derive throw velocity from controller matrix direction
                 const releaseVel = new THREE.Vector3(0, 0.08, -0.22);
                 const tempMatrix = new THREE.Matrix4().identity().extractRotation(controller.matrixWorld);
                 releaseVel.applyMatrix4(tempMatrix);
@@ -4322,9 +4362,13 @@
 
         // Hand tracking pinch/fist implementations
         function onXRPinch(hand) {
-            if (grabbedObj) return; // Enforce only holding one ball/fireball limit
+            if (grabbedObj) return; 
 
-            const indexTip = hand.children[9];
+            // Restrict pinch-grab strictly to the right hand
+            const handedness = hand.inputSource ? hand.inputSource.handedness : 'right';
+            if (handedness !== 'right') return;
+
+            const indexTip = hand.joints['index-finger-tip'];
             if (!indexTip) return;
 
             const jointPos = new THREE.Vector3().setFromMatrixPosition(indexTip.matrixWorld);
@@ -4364,12 +4408,15 @@
             mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
 
             raycaster.setFromCamera(mouse, camera);
-            const intersects = raycaster.intersectObjects(bubblesGroup.children);
+            const intersects = raycaster.intersectObjects(bubblesGroup.children, true);
 
             if (intersects.length > 0) {
-                const bubble = intersects[0].object;
+                // Get top level parent of the intersected fireball
+                let bubble = intersects[0].object;
+                while (bubble.parent && bubble.parent !== bubblesGroup) {
+                    bubble = bubble.parent;
+                }
                 
-                // Mock grab & throw interaction visually
                 if (!bubble.userData.isGrabbed) {
                     bubble.userData.isGrabbed = true;
                     setTimeout(() => {
@@ -4396,7 +4443,7 @@
                     if (activeController) {
                         targetPos.setFromMatrixPosition(activeController.matrixWorld);
                     } else if (activeHand) {
-                        const indexTip = activeHand.children[9];
+                        const indexTip = activeHand.joints['index-finger-tip'] || activeHand.joints['wrist'];
                         if (indexTip) targetPos.setFromMatrixPosition(indexTip.matrixWorld);
                     }
                     bubble.position.lerp(targetPos, 0.35);
@@ -4406,9 +4453,34 @@
                     bubble.userData.velocity.y -= 0.003;
                     bubble.position.add(bubble.userData.velocity);
 
+                    // Pulsate core / glow size slightly
+                    if (bubble.children[1]) {
+                        const scale = 1.0 + Math.sin(timestamp * 0.015) * 0.15;
+                        bubble.children[1].scale.set(scale, scale, scale);
+                    }
+
                     // Pulse light emitter scale
                     if (bubble.userData.fireLight) {
                         bubble.userData.fireLight.intensity = 2.0 + Math.sin(timestamp * 0.015) * 0.6;
+                    }
+
+                    // Spawn fire trail particles
+                    if (!bubble.userData.impacted && Math.random() < 0.35) {
+                        const trailGeo = new THREE.SphereGeometry(0.04, 8, 8);
+                        const trailMat = new THREE.MeshBasicMaterial({ color: 0xff5500, transparent: true, opacity: 0.8 });
+                        const trailMesh = new THREE.Mesh(trailGeo, trailMat);
+                        trailMesh.position.copy(bubble.position);
+                        scene.add(trailMesh);
+                        
+                        gsap.to(trailMesh.scale, {
+                            x: 0, y: 0, z: 0,
+                            duration: 0.4,
+                            onComplete: () => {
+                                scene.remove(trailMesh);
+                                trailGeo.dispose();
+                                trailMat.dispose();
+                            }
+                        });
                     }
 
                     // Check for ground impact or environmental collider hits
@@ -4432,11 +4504,8 @@
                         bubble.userData.impacted = true;
                         triggerExplosion(bubble.position);
                         
-                        // Clean up fireball mesh from the scene graph
                         setTimeout(() => {
                             bubblesGroup.remove(bubble);
-                            if (bubble.geometry) bubble.geometry.dispose();
-                            if (bubble.material) bubble.material.dispose();
                         }, 20);
                     }
                 }
@@ -4450,15 +4519,11 @@
                     scene.remove(exp.group);
                     particleExplosions.splice(idx, 1);
                 } else {
-                    // Fade light flash intensity down
                     exp.flash.intensity = Math.max(0, 8.0 * (1.0 - elapsed / 600));
-                    
-                    // Direct spark translations outward
                     exp.sparks.forEach(sp => {
                         sp.mesh.position.addScaledVector(sp.dir, sp.speed);
                         sp.speed *= 0.95; // spark drag deceleration
                         
-                        // Fade colors to red/dark grey
                         if (sp.mesh.material) {
                             sp.mesh.material.color.lerp(new THREE.Color(0x3a3a3a), 0.05);
                         }
@@ -4466,7 +4531,7 @@
                 }
             });
 
-            // Left Hand custom gesture locomotion mapping: peace/scissors targeting & teleport
+            // Left Hand custom gesture locomotion mapping
             for (let index = 0; index < 2; index++) {
                 const hand = renderer.xr.getHand(index);
                 if (hand && hand.visible && hand.joints) {
@@ -4484,76 +4549,103 @@
                         }
                     });
 
-                    // Determine handedness context safely
                     const handedness = hand.inputSource ? hand.inputSource.handedness : (index === 0 ? 'left' : 'right');
 
                     if (handedness === 'left') {
                         const wrist = hand.joints['wrist'];
+                        const thumbTip = hand.joints['thumb-tip'];
                         const indexTip = hand.joints['index-finger-tip'];
+                        const indexMcp = hand.joints['index-finger-mcp'];
                         const middleTip = hand.joints['middle-finger-tip'];
                         const ringTip = hand.joints['ring-finger-tip'];
-                        const pinkyTip = hand.joints['pinky-finger-tip'];
 
-                        if (wrist && indexTip && middleTip && ringTip && pinkyTip) {
-                            const indexLen = indexTip.position.distanceTo(wrist.position);
-                            const middleLen = middleTip.position.distanceTo(wrist.position);
-                            const ringLen = ringTip.position.distanceTo(wrist.position);
-                            const pinkyLen = pinkyTip.position.distanceTo(wrist.position);
+                        if (wrist && indexMcp && indexTip && middleTip && ringTip) {
+                            const indexDist = indexTip.position.distanceTo(wrist.position);
+                            const middleDist = middleTip.position.distanceTo(wrist.position);
+                            const ringDist = ringTip.position.distanceTo(wrist.position);
                             
-                            const distanceTips = indexTip.position.distanceTo(middleTip.position);
+                            const isPinching = thumbTip && thumbTip.position.distanceTo(indexTip.position) < 0.035;
 
-                            // Scissors/Peace state criteria: Index & Middle fingers straight, Ring & Pinky curled
-                            if (indexLen > 0.16 && middleLen > 0.16 && ringLen < 0.11 && pinkyLen < 0.11) {
-                                if (distanceTips > 0.045) {
-                                    // Aiming raycast tracking
-                                    leftScissorsActive = true;
-                                    const rayDir = new THREE.Vector3().subVectors(indexTip.position, wrist.position).normalize();
-                                    raycaster.ray.origin.copy(wrist.position);
-                                    raycaster.ray.direction.copy(rayDir);
+                            // Easy & robust pointing pose detection: Index tip is extended further than other fingers
+                            const isPointing = (indexDist > middleDist + 0.02) && (indexDist > ringDist + 0.02);
 
-                                    // Intersect floor level
-                                    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 2.25);
-                                    const intersectionPoint = new THREE.Vector3();
-                                    if (raycaster.ray.intersectPlane(plane, intersectionPoint)) {
-                                        // Bound navigation within sandbox map limits
-                                        if (intersectionPoint.length() < 22) {
-                                            haloMesh.visible = true;
-                                            haloMesh.position.copy(intersectionPoint);
-                                        } else {
-                                            haloMesh.visible = false;
-                                        }
+                            if (isPointing && !isPinching) {
+                                leftAimingActive = true;
+                                
+                                // Pointing vector follows the index finger bone exactly (MCP knuckle to index Tip)
+                                const rayDir = new THREE.Vector3().subVectors(indexTip.position, indexMcp.position).normalize();
+                                raycaster.ray.origin.copy(indexTip.position);
+                                raycaster.ray.direction.copy(rayDir);
+
+                                const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 2.25);
+                                const intersectionPoint = new THREE.Vector3();
+                                if (raycaster.ray.intersectPlane(plane, intersectionPoint)) {
+                                    if (intersectionPoint.distanceTo(xrCameraRig.position) < 25) {
+                                        haloMesh.visible = true;
+                                        haloMesh.position.copy(intersectionPoint);
+                                    } else {
+                                        haloMesh.visible = false;
                                     }
-                                } else if (distanceTips < 0.024 && leftScissorsActive && haloMesh.visible) {
-                                    // Unite pointer and middle finger triggers instant teleportation
-                                    leftScissorsActive = false;
-                                    xrCameraRig.position.set(haloMesh.position.x, xrCameraRig.position.y, haloMesh.position.z);
-                                    window.playSFX('tap');
-                                    window.vibrate();
+                                } else {
                                     haloMesh.visible = false;
                                 }
-                            } else {
-                                leftScissorsActive = false;
+                            } else if (leftAimingActive && isPinching && haloMesh.visible) {
+                                // Teleport left hand: thumb & index pinch trigger
+                                xrCameraRig.position.set(haloMesh.position.x, xrCameraRig.position.y, haloMesh.position.z);
+                                window.playSFX('tap');
+                                window.vibrate();
+                                haloMesh.visible = false;
+                                leftAimingActive = false;
+                            } else if (!isPinching) {
+                                leftAimingActive = false;
                                 haloMesh.visible = false;
                             }
                         }
                     }
 
-                    // Hand Gesture 2: Snapping Finger Switch
-                    const thumbTip = hand.joints['thumb-tip'];
-                    const middleTip = hand.joints['middle-finger-tip'];
-                    if (thumbTip && middleTip) {
-                        const dist = thumbTip.position.distanceTo(middleTip.position);
-                        const isPinching = dist < 0.035;
-
-                        // Check transition from pinch to rapid snap release
-                        if (lastPinchState[index] && !isPinching) {
-                            const now = performance.now();
-                            if (now - lastSnapTime > 800) { // debounce snap
-                                lastSnapTime = now;
-                                spawnBallInFront();
+                    if (handedness === 'right') {
+                        // Watch for release gesture to throw grabbed fireball (Right hand only)
+                        if (grabbedObj && activeHand === hand) {
+                            const thumbTip = hand.joints['thumb-tip'];
+                            const indexTip = hand.joints['index-finger-tip'];
+                            if (thumbTip && indexTip) {
+                                const dist = thumbTip.position.distanceTo(indexTip.position);
+                                // Release when index and thumb separate (hand open)
+                                if (dist > 0.06) {
+                                    grabbedObj.userData.isGrabbed = false;
+                                    
+                                    const wrist = hand.joints['wrist'];
+                                    const throwDir = new THREE.Vector3(0, 0.08, -0.2).applyQuaternion(camera.quaternion);
+                                    if (wrist && indexTip) {
+                                        throwDir.subVectors(indexTip.position, wrist.position).normalize().multiplyScalar(0.25);
+                                        throwDir.y += 0.05;
+                                    }
+                                    
+                                    grabbedObj.userData.velocity.copy(throwDir);
+                                    grabbedObj = null;
+                                    activeHand = null;
+                                    window.showToast("Fireball Thrown!");
+                                }
                             }
                         }
-                        lastPinchState[index] = isPinching;
+
+                        // Snapping spawn gesture (Right hand only)
+                        const thumbTip = hand.joints['thumb-tip'];
+                        const middleTip = hand.joints['middle-finger-tip'];
+                        if (thumbTip && middleTip) {
+                            const dist = thumbTip.position.distanceTo(middleTip.position);
+                            const isPinching = dist < 0.035;
+
+                            // Check snap release transition
+                            if (lastPinchState[index] && !isPinching) {
+                                const now = performance.now();
+                                if (now - lastSnapTime > 800) { 
+                                    lastSnapTime = now;
+                                    spawnBallInFront(hand);
+                                }
+                            }
+                            lastPinchState[index] = isPinching;
+                        }
                     }
                 }
 
@@ -4569,7 +4661,7 @@
                                 const now = performance.now();
                                 if (now - lastSnapTime > 800) {
                                     lastSnapTime = now;
-                                    spawnBallInFront();
+                                    spawnBallInFront(controller);
                                 }
                             }
                         }
@@ -4597,6 +4689,7 @@
                 if (copyBtn) copyBtn.style.opacity = '0.1';
                 window.playSFX('back');
                 window.on3DScreenChange(window.appState.currentScreen);
+                window.showToast("Left: Point index to aim, pinch to teleport. Right: Snap to summon fireball!");
             } else {
                 document.body.classList.remove('vr-mode-active');
                 if (containerEl) containerEl.classList.add('hidden');
