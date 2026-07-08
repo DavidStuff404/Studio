@@ -4546,30 +4546,36 @@
                         const middleTip = hand.joints['middle-finger-tip'];
 
                         if (wrist && indexTip && indexMcp && middleTip && thumbTip) {
+                            // Ensure stable scale for hand model to prevent deformation
+                            hand.scale.setScalar(1);
+                            
                             const thumbTipDist = thumbTip.position.distanceTo(indexTip.position);
-                            const isPinching = thumbTipDist < 0.035;
+                            const isPinching = thumbTipDist < 0.04;
 
                             const indexWristDist = indexTip.position.distanceTo(wrist.position);
                             const middleWristDist = middleTip.position.distanceTo(wrist.position);
 
-                            // Pointing condition: index finger extended, middle finger is closed
-                            const isPointing = (indexWristDist > middleWristDist + 0.02) && !isPinching;
+                            // Pointing check: index extended significantly further than middle
+                            const isPointing = (indexWristDist > middleWristDist + 0.015);
 
-                            if (isPointing) {
-                                // Pointing vector follows the index finger bone exactly (MCP knuckle to index Tip)
-                                const rayDir = new THREE.Vector3().subVectors(indexTip.position, indexMcp.position).normalize();
-                                raycaster.ray.origin.copy(indexTip.position);
+                            if (isPointing && !isPinching) {
+                                // Pointing vector follows the index finger bone direction (MCP to Tip)
+                                const tipW = new THREE.Vector3().setFromMatrixPosition(indexTip.matrixWorld);
+                                const mcpW = new THREE.Vector3().setFromMatrixPosition(indexMcp.joint ? indexMcp.matrixWorld : indexMcp.matrixWorld);
+                                const rayDir = new THREE.Vector3().subVectors(tipW, mcpW).normalize();
+                                
+                                raycaster.ray.origin.copy(tipW);
                                 raycaster.ray.direction.copy(rayDir);
 
                                 const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 2.2);
                                 const intersectionPoint = new THREE.Vector3();
                                 if (raycaster.ray.intersectPlane(plane, intersectionPoint)) {
-                                    if (intersectionPoint.distanceTo(xrCameraRig.position) < 30) {
+                                    if (intersectionPoint.distanceTo(xrCameraRig.position) < 40) {
                                         haloMesh.visible = true;
                                         haloMesh.position.copy(intersectionPoint);
                                         haloLight.visible = true;
                                         haloLight.position.copy(intersectionPoint);
-                                        haloLight.position.y += 0.25; // glow above ground
+                                        haloLight.position.y += 0.25;
                                         leftTeleportTarget = intersectionPoint.clone();
                                     } else {
                                         haloMesh.visible = false;
@@ -4582,14 +4588,14 @@
                                     leftTeleportTarget = null;
                                 }
                             } else if (isPinching && leftTeleportTarget) {
-                                // Teleport left hand: thumb & index pinch trigger
+                                // Teleport if we have a locked target from aiming
                                 xrCameraRig.position.set(leftTeleportTarget.x, xrCameraRig.position.y, leftTeleportTarget.z);
                                 window.playSFX('tap');
                                 window.vibrate();
                                 leftTeleportTarget = null;
                                 haloMesh.visible = false;
                                 haloLight.visible = false;
-                            } else if (!isPinching) {
+                            } else if (!isPointing && !isPinching) {
                                 haloMesh.visible = false;
                                 haloLight.visible = false;
                                 leftTeleportTarget = null;
@@ -4598,24 +4604,31 @@
                     }
 
                     if (handedness === 'right') {
+                        hand.scale.setScalar(1);
+                        
                         // Watch for release gesture to throw grabbed fireball (Right hand only)
                         if (grabbedObj && activeHand === hand) {
                             const thumbTip = hand.joints['thumb-tip'];
                             const indexTip = hand.joints['index-finger-tip'];
                             const indexMcp = hand.joints['index-finger-mcp'];
+                            const wrist = hand.joints['wrist'];
+
                             if (thumbTip && indexTip) {
                                 const dist = thumbTip.position.distanceTo(indexTip.position);
                                 // Release when index and thumb separate (hand open)
-                                if (dist > 0.06) {
+                                if (dist > 0.07) {
                                     grabbedObj.userData.isGrabbed = false;
                                     
                                     const throwDir = new THREE.Vector3();
-                                    if (indexTip && indexMcp) {
-                                        throwDir.subVectors(indexTip.position, indexMcp.position).normalize();
+                                    if (indexTip && wrist) {
+                                        // Better 'hand facing' vector: from wrist through index knuckle/tip
+                                        const tipW = new THREE.Vector3().setFromMatrixPosition(indexTip.matrixWorld);
+                                        const wristW = new THREE.Vector3().setFromMatrixPosition(wrist.matrixWorld);
+                                        throwDir.subVectors(tipW, wristW).normalize();
                                     } else {
                                         throwDir.set(0, 0, -1).applyQuaternion(camera.quaternion);
                                     }
-                                    throwDir.multiplyScalar(0.24); // Launch speed multiplier
+                                    throwDir.multiplyScalar(0.28); 
                                     
                                     grabbedObj.userData.velocity.copy(throwDir);
                                     grabbedObj = null;
